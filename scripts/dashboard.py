@@ -57,7 +57,9 @@ def main() -> None:
         .block-container {padding-top: 2rem; padding-bottom: 3rem; max-width: 1440px;}
         .eyebrow {color:#687386; font-size:.78rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase;}
         .notice {background:#fff8e6; border:1px solid #f1d58a; border-radius:12px; padding:14px 18px; color:#614b16; line-height:1.5;}
-        div[data-testid="stButton"] > button {height:148px; text-align:left; white-space:pre-wrap; line-height:1.5;}
+        div[data-testid="stButton"] > button {height:148px; text-align:left; white-space:pre-line; line-height:1.5;}
+        .st-key-selected_bearing [data-baseweb="select"] {font-size:1.5rem; font-weight:600;}
+        .st-key-selected_bearing [data-baseweb="select"] > div {min-height:3rem;}
         </style>
         """,
         unsafe_allow_html=True,
@@ -113,8 +115,9 @@ def main() -> None:
             f".st-key-open_{bearing_id} button {{"
             f"background-color: {background} !important;"
             f"border-color: {foreground} !important;"
-            "color: #202124 !important;"
+            "color: #202124 !important; white-space: pre-line !important;"
             "}"
+            f".st-key-open_{bearing_id} button p {{white-space: pre-line !important;}}"
             f".st-key-open_{bearing_id} button:hover {{filter: brightness(0.96);}}"
         )
     st.markdown(f"<style>{''.join(button_styles)}</style>", unsafe_allow_html=True)
@@ -173,10 +176,9 @@ def main() -> None:
                 probability = series.probabilities[position]
                 column.button(
                     (
-                        f"**{bearing_id}**\n\n"
-                        f"{status_icons[status]} **{label}** · Score h20 {probability:.1%}\n\n"
-                        f"{message}\n\n"
-                        f"Acquisizione {series.sample_indices[position]:,} · Apri dettaglio →"
+                        f"{bearing_id} · {status_icons[status]} {label} · "
+                        f"Score h20 {probability:.1%}  \n"
+                        f"{message}"
                     ),
                     key=f"open_{bearing_id}",
                     on_click=open_bearing_detail,
@@ -185,13 +187,18 @@ def main() -> None:
                 )
 
     with detail_tab:
+        st.selectbox(
+            "Cuscinetto",
+            options=bearing_ids,
+            key="selected_bearing",
+            label_visibility="collapsed",
+        )
         selected_bearing = st.session_state["selected_bearing"]
         selected = series_by_bearing[selected_bearing]
         position = snapshots[selected_bearing]
         status = statuses[selected_bearing]
         label, foreground, _, message = STATUS_STYLE[status]
 
-        st.subheader(selected_bearing)
         details = st.columns(4)
         details[0].metric("Stato del cuscinetto", label)
         details[1].metric("Score modello h20", f"{selected.probabilities[position]:.1%}")

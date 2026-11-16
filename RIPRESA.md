@@ -287,12 +287,15 @@ non bastano a produrre una decisione operativa affidabile.
 È stato aggiunto `scripts/dashboard.py`, una dashboard Streamlit per riprodurre
 le sei sequenze FEMTO con due schede: quadro d'insieme e dettaglio. Selezionando
 un cuscinetto nel quadro si apre la scheda di dettaglio, che mostra stato,
-score h20 e grafico di RMS orizzontale. I pulsanti del quadro hanno lo sfondo
-del colore corrispondente allo stato. La barra laterale dichiara il dataset
-NASA FEMTO/PRONOSTIA, l'accelerazione vibratoria misurata sui due assi e l'RMS
-orizzontale visualizzato; l'unità non è specificata nei file. Il cursore
-"Posizione nella sequenza storica (%)" confronta la stessa posizione relativa
-nei run, non il tempo reale. Usa le feature in
+score h20 e grafico di RMS orizzontale. Nel dettaglio si può cambiare
+cuscinetto con un selettore senza etichetta visibile, formattato come titolo.
+I pulsanti del quadro hanno lo sfondo del colore corrispondente allo stato e
+mostrano cuscinetto, stato e score sulla prima riga, descrizione sulla seconda.
+La barra laterale dichiara il dataset NASA FEMTO/PRONOSTIA, l'accelerazione
+vibratoria misurata sui due assi e l'RMS orizzontale visualizzato; l'unità non
+è specificata nei file. Il cursore "Posizione nella sequenza storica (%)"
+confronta la stessa posizione relativa nei run, non il tempo reale. Usa le
+feature in
 `processed/femto_features.npz` e le predizioni LOCO standard in
 `processed/loco_rms_comparison/femto_loco_h20_alarm_predictions.csv`.
 
