@@ -2,12 +2,13 @@
 
 ## Scopo, dati e obiettivo
 
-Il progetto studia se le vibrazioni misurate durante prove run-to-failure
-contengano un segnale utile ad anticipare il termine della vita di un
-cuscinetto. L'obiettivo è valutare, in modo sperimentale, quanto tale segnale
-si trasferisca a cuscinetti e condizioni operative non usati per addestrare o
-selezionare la politica di allarme. Non si sta certificando un sistema
-industriale né formulando una diagnosi fisica del guasto.
+La finalità applicativa è supportare la decisione di sostituire un cuscinetto
+prima del guasto, usando le vibrazioni come indicatore del rischio. Il lavoro
+corrente è ancora una valutazione sperimentale retrospettiva: verifica se il
+segnale anticipa il termine delle sequenze e se il metodo trasferisce a
+cuscinetti e condizioni operative non usati per addestramento o selezione.
+Non è ancora una regola di sostituzione validata in esercizio né una diagnosi
+fisica del guasto.
 
 Si usa il dataset NASA FEMTO/PRONOSTIA: 7.534 acquisizioni per sei cuscinetti
 run-to-failure, due per ciascuna delle tre condizioni operative. Ogni
@@ -19,17 +20,65 @@ ultime 20 acquisizioni di ogni sequenza: 120 positivi in totale, circa 1,59%.
 Obiettivo sperimentale immediato: confrontare la regressione logistica con
 baseline semplici sulle stesse partizioni Leave-One-Condition-Out (LOCO),
 selezionando ogni politica solo sui dati interni e misurando rilevamenti,
-falsi allarmi e tempistica delle notifiche. La metrica primaria è il
-rilevamento evento nella finestra h20; finestre di preavviso alternative sono
-esplorative. I risultati, con soli sei cuscinetti, non sono una stima di
-prestazioni industriali.
+falsi allarmi e tempistica delle notifiche. h20 (ultime 20 acquisizioni) è
+solo una proxy del guasto imminente, non un'etichetta osservata di
+"sostituire/non sostituire". Per tradurre il rischio in una decisione servono
+anche una finestra di intervento espressa in tempo reale, i costi di un guasto
+mancato e di un'ispezione non necessaria, e la cadenza delle acquisizioni.
+Con soli sei cuscinetti, i risultati attuali non stimano le prestazioni di una
+regola industriale.
 
-## Stato corrente (3 novembre 2026)
+Per la fase attuale l'output desiderato è un allarme che richieda un'ispezione;
+la decisione di sostituzione resta a una persona. Il preavviso utile e il
+compromesso accettabile tra guasti mancati e ispezioni non necessarie sono
+ancora da definire.
 
-Il lavoro corrente cerca di capire se le feature di vibrazione anticipano il
-termine delle sequenze e quanto il segnale e la politica di allarme si
-trasferiscano tra cuscinetti e condizioni operative. Non si sta certificando
-un sistema industriale né identificando una causa fisica.
+### Indicazioni tecniche reperite per definire i requisiti
+
+Le linee guida pubbliche non forniscono un unico preavviso minimo o rapporto
+di costo valido per ogni cuscinetto e impianto. ISO 17359 dà indicazioni
+generali per impostare un programma di condition monitoring; ISO 13373-1
+riguarda le procedure generali di monitoraggio delle vibrazioni. Sono
+riferimenti per progettare il processo e le misure, non una soglia universale
+di sostituzione applicabile direttamente ai punteggi di questo esperimento.
+La documentazione del NASA Prognostics Data Repository specifica inoltre che
+i dati sono raccolti per sviluppare algoritmi prognostici e che l'uso dei dati
+e dei sistemi derivati è a rischio dell'utente: i benchmark run-to-failure non
+validano da soli un allarme per un impianto.
+
+Per questo progetto le indicazioni pratiche sono:
+
+- **Preavviso:** definirlo a partire dal tempo necessario per verificare
+  l'allarme, pianificare l'intervento e ottenere ricambi/fermo macchina, con un
+  margine concordato con la manutenzione. Calcolarlo in tempo reale dai
+  timestamp o dalla cadenza documentata; non convertire h20 in minuti finché
+  la cadenza FEMTO non è verificata per gli artefatti usati.
+- **Costo degli errori:** non adottare un rapporto generico trovato in un
+  benchmark. Per un allarme d'ispezione, conteggiare almeno il carico/costo
+  delle ispezioni non necessarie; per un mancato allarme, stimare guasto,
+  fermo e possibili danni conseguenti. I pesi vanno concordati con chi gestisce
+  l'impianto. Riportare anche recall per evento, falsi allarmi per unità di
+  tempo e distribuzione del preavviso, non solo F1.
+- **Output:** emettere un allarme di ispezione con evidenza e contesto; la
+  sostituzione resta una decisione umana dopo verifica. Non trasformare il
+  punteggio del classificatore in un comando automatico di sostituzione.
+
+Fonti consultate il 12 novembre 2026:
+
+- [ISO 17359:2018 — Condition monitoring and diagnostics of machines —
+  General guidelines](https://www.iso.org/standard/71194.html).
+- [ISO catalogue search — ISO 13373-1, vibration condition monitoring,
+  general procedures](https://www.iso.org/search.html?q=ISO%2013373-1).
+- [NASA Prognostics Data Repository](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/),
+  descrizione e avvertenza sull'uso dei dataset.
+
+## Stato corrente (12 novembre 2026)
+
+Il lavoro corrente cerca di capire se le feature di vibrazione consentono di
+anticipare il termine delle sequenze e di sostenere la decisione di
+sostituzione, e quanto punteggi e politiche di notifica si trasferiscano tra
+cuscinetti e condizioni operative. È una valutazione sperimentale, non una
+regola industriale già validata né l'identificazione di una causa fisica.
 
 - Dataset FEMTO/PRONOSTIA: 7.534 acquisizioni per 6 cuscinetti, due per
   ciascuna condizione; target h20 = ultime 20 acquisizioni positive per
@@ -81,23 +130,61 @@ e 1/2 nella condizione 3; i rispettivi F1 evento sono 16,7%, 0% e 66,7%.
 Questa singola esecuzione favorisce la baseline sui valori aggregati, ma non
 dimostra una superiorità generale con appena sei bearing.
 
-**Nota di riproducibilità:** l'esecuzione appaiata recente non coincide con
-il precedente riepilogo LOCO: quello riportava 2/2 bearing rilevati nella
-condizione 3 e F1 100%, mentre la nuova esecuzione ne riporta 1/2 e F1
-66,7%. Anche le politiche selezionate differiscono. I dati elaborati
-ricostruiti dai CSV grezzi coincidono esattamente con `femto_features.npz`,
-ma non è ancora stata identificata la causa della variazione dei risultati.
-Perciò i numeri del confronto appaiato sono riportati separatamente e non
-vanno mescolati con la precedente esecuzione; prima di trarre conclusioni è
-necessario investigare e rendere riproducibile il training LOCO.
+**Nota di riproducibilità (verificata):** la differenza tra il riepilogo
+storico e il confronto appaiato non era una variazione casuale del modello,
+ma una diversa modalità di training. La ricostruzione dell'artefatto storico
+con `--weighted-loss` ha prodotto un CSV delle predizioni identico byte per
+byte a quello storico: quel flag attiva oversampling della classe minoritaria.
+La riesecuzione standard senza oversampling ha invece prodotto un CSV
+identico byte per byte a quello usato nel confronto appaiato.
 
-Questi risultati non dicono semplicemente che il modello assegna probabilità
-basse in h20. Nel run appaiato, tutti i campioni h20 sono sopra la soglia in
-quattro bearing, nessuno in Bearing3_1 e 9/20 in Bearing3_2. Nelle condizioni
-1 e 2 le notifiche sono spesso molto anticipate o l'allarme persiste prima
-della finestra, perciò la politica non soddisfa la metrica di notifica in
-h20. È quindi necessario distinguere discriminazione del punteggio e
-tempestività della notifica.
+È stato verificato anche il percorso della libreria C++ caricata: per default
+il loader trova la copia installata nell'ambiente Python, mentre è presente
+anche una build nella cartella sorella `machineLearning`. Pur avendo hash
+diversi, entrambe le build hanno prodotto lo stesso CSV nella riesecuzione
+standard controllata; la scelta del binario non spiega quindi la discrepanza
+osservata in questo esperimento. L'artefatto storico non registrava i metadati
+`weighted_loss` e `training_sampling`; quelli sono ora salvati nel JSON. I due
+risultati descrivono regimi di training distinti e non vanno mescolati. Per il
+confronto appaiato con RMS si usa la regressione logistica standard, senza
+oversampling.
+
+I risultati non indicano semplicemente che il modello assegni probabilità
+basse in h20. Nel CSV appaiato, la logistica ha tutti i 20 campioni h20 sopra
+soglia in quattro bearing, nessuno in Bearing3_1 e 9/20 in Bearing3_2; per
+RMS i conteggi sono rispettivamente 20/20, 20/20, 20/20, 19/20, 0/20 e
+13/20. Le notifiche h20 restano però una sola per la logistica e due per RMS:
+le notifiche fuori finestra o persistenti prima di h20 non soddisfano la
+tempistica richiesta. Il punteggio, il superamento della soglia e la
+notifica operativa sono quindi risultati diversi.
+
+### Separazione del punteggio dalla decisione di notifica
+
+Come controllo descrittivo, l'AUC ROC è stata calcolata separatamente per
+bearing sui punteggi LOCO esterni e sulle etichette h20. Non è stata usata per
+selezionare le politiche; misura solo l'ordinamento dei campioni del bearing
+esaminato e non dimostra che una soglia trasferisca a un nuovo bearing.
+
+| Bearing | AUC logistica / RMS | Campioni h20 sopra soglia (logistica / RMS) | Notifiche in h20 (logistica / RMS) | Lead più vicino al termine, acquisizioni (logistica / RMS) |
+|---|---:|---:|---:|---:|
+| Bearing1_1 | 1,000 / 1,000 | 20/20 / 20/20 | 0 / 0 | 52 / 68 |
+| Bearing1_2 | 1,000 / 1,000 | 20/20 / 20/20 | 0 / 1 | 23 / 16 |
+| Bearing2_1 | 1,000 / 1,000 | 20/20 / 20/20 | 0 / 0 | 31 / 26 |
+| Bearing2_2 | 0,926 / 0,992 | 20/20 / 19/20 | 0 / 0 | 42 / 24 |
+| Bearing3_1 | 0,998 / 0,997 | 0/20 / 0/20 | 0 / 0 | — / — |
+| Bearing3_2 | 1,000 / 1,000 | 9/20 / 13/20 | 1 / 1 | 3 / 7 |
+
+Le AUC entro bearing sono alte, ma sono una misura retrospettiva e non
+valutano una decisione calibrata tra bearing. In particolare, in
+Bearing1_1, Bearing2_1 e Bearing2_2 le notifiche più vicine al termine sono
+ancora fuori da h20; Bearing1_2 riceve una notifica RMS a 16 acquisizioni dal
+termine ma nessuna notifica logistica nella finestra. In Bearing3_1 nessuna
+delle due soglie produce una notifica; in Bearing3_2 entrambe notificano in
+h20. Il lead è contato in acquisizioni, non convertito in tempo reale. Questi
+casi puntano a un problema di trasferimento della soglia e di tempistica
+della politica, non a una prova che sia già possibile decidere quando
+sostituire il componente. Le notifiche h20 per bearing sono coerenti con i
+totali appaiati: 1/6 per la logistica e 2/6 per RMS.
 
 ### Analisi descrittiva delle feature e preavviso
 
@@ -143,18 +230,87 @@ appaiato e non giustifica da sola la sostituzione del cooldown.
   sono stati isolati causalmente.
 - L'opzione `--weighted-loss` della validazione LOCO duplica campioni della
   classe minoritaria; è ricampionamento, non pesatura effettiva della loss.
-  Non è disponibile un riepilogo verificabile per fold della variante: non
-  usare i risultati di rebalancing precedentemente riferiti come confronto
-  confermato.
+  La run storica con oversampling è stata riprodotta esattamente e il JSON
+  ora registra la modalità; i suoi risultati vanno comunque tenuti separati
+  dal confronto standard senza oversampling.
 - La geometria impiegata nell'analisi spettrale è provvisoria; le frequenze
   caratteristiche non sono certificate per il cuscinetto installato.
 
-Prossimo passo utile: scegliere e documentare una metrica temporale che
-bilanci rilevamento, falsi allarmi e preavviso eccessivo; solo dopo valutare
-una modifica della politica o del modello. Priorità immediata: spiegare la
-variazione tra esecuzioni LOCO logistiche e assicurare che predizioni e
-politiche siano riproducibili. Mantenere separati i risultati esplorativi
-dalla valutazione sul target h20 originale.
+#### Stabilità della selezione delle politiche LOCO
+
+Per ciascuna piega LOCO sono state valutate tutte le 48 combinazioni della
+griglia interna (4 soglie, 3 conferme, 4 cooldown) con `balanced_f1`. Nel
+training standard, più politiche raggiungono lo stesso F1 massimo; dopo i
+criteri di spareggio interni, la politica migliore è unica nelle condizioni
+2 e 3, mentre nella condizione 1 quattro politiche sono esattamente a pari
+merito:
+
+| Condizione test | Politica selezionata (soglia / conferma / cooldown) | Politiche con F1 massimo | Pari merito esatto dopo gli spareggi |
+|---|---:|---:|---:|
+| 1 | 0,50 / 3 / 0 | 8/48 | 4/48 |
+| 2 | 0,10 / 3 / 50 | 3/48 | 1/48 |
+| 3 | 0,30 / 5 / 50 | 2/48 | 1/48 |
+
+È stata poi perturbata la selezione standard lasciando fuori, a turno, uno dei
+quattro bearing interni di ciascuna piega. Per ognuno dei quattro casi si sono
+ricalcolate le predizioni leave-one-bearing-out sui tre bearing rimanenti,
+addestrando ciascun modello interno sugli altri due, e riselezionate le 48
+politiche. La politica completa originaria non è stata riselezionata in
+nessuna delle 12 perturbazioni (0/4 per condizione); le combinazioni scelte
+cambiano al variare dei bearing inclusi. Questo indica instabilità della
+selezione, non che una particolare alternativa sia migliore.
+
+Il risultato è diagnostico: ogni stima interna usa solo tre o quattro
+bearing, perciò la griglia non giustifica di cambiare soglie o cooldown sulla
+base di questi sei esemplari. Anche i risultati delle politiche con
+oversampling hanno una propria superficie di selezione e non sono stati
+inclusi nella perturbazione leave-one-out aggiuntiva. Dettagli di tutte le
+combinazioni, metriche e perturbazioni:
+`/mnt/shared/predictive-maintenance/processed/loco_policy_stability_20261103.json`.
+
+La discrepanza tra gli artefatti LOCO è stata spiegata e riprodotta: la run
+storica usa oversampling, quella del confronto RMS no; entrambe le modalità
+sono registrate nei rispettivi JSON e i CSV sono stati confrontati
+byte per byte.
+
+Prossimo passo utile per l'allarme di ispezione: concordare la finestra minima
+di preavviso in unità di tempo e una funzione di costo che renda espliciti
+guasti mancati e ispezioni non necessarie. Prima di modificare soglie o
+cooldown, aggiungere una valutazione temporale/costo-beneficio con selezione
+annidata solo sui dati interni; mantenere h20 come benchmark storico, non come
+regola di sostituzione, e tenere separati i risultati esplorativi. Finché
+cadenza e costi non sono definiti, i lead time in acquisizioni e l'F1 evento
+non bastano a produrre una decisione operativa affidabile.
+
+### Aggiornamento 16 novembre 2026: cruscotto dimostrativo
+
+È stato aggiunto `scripts/dashboard.py`, una dashboard Streamlit per riprodurre
+le sei sequenze FEMTO con due schede: quadro d'insieme e dettaglio. Selezionando
+un cuscinetto nel quadro si apre la scheda di dettaglio, che mostra stato,
+score h20 e grafico di RMS orizzontale. I pulsanti del quadro hanno lo sfondo
+del colore corrispondente allo stato. La barra laterale dichiara il dataset
+NASA FEMTO/PRONOSTIA, l'accelerazione vibratoria misurata sui due assi e l'RMS
+orizzontale visualizzato; l'unità non è specificata nei file. Il cursore
+"Posizione nella sequenza storica (%)" confronta la stessa posizione relativa
+nei run, non il tempo reale. Usa le feature in
+`processed/femto_features.npz` e le predizioni LOCO standard in
+`processed/loco_rms_comparison/femto_loco_h20_alarm_predictions.csv`.
+
+Nel replay verde significa score sotto la soglia sperimentale, giallo score
+sopra soglia senza conferma, rosso notifica emessa dalla policy LOCO. Il rosso
+resta latched perché non sono disponibili prese in carico o risoluzioni. La
+dashboard non legge sensori live; lo score non è calibrato e i colori non sono
+validati per uso industriale. Rosso indica di valutare un'ispezione umana, non
+una sostituzione automatica.
+
+Avvio: `streamlit run scripts/dashboard.py`. I percorsi di feature e predizioni
+sono configurabili dalla barra laterale. Il caricamento dei dati reali e i test
+del progetto sono stati verificati; 27 test unitari passano.
+
+Attività futura, non ancora avviata: rendere il progetto riproducibile da zero
+su un ambiente pulito. Serviranno istruzioni versionate per repository e
+dipendenze, acquisizione dei dati, comandi verificati, artefatti attesi e uno
+script versionato per l'analisi di stabilità delle politiche.
 
 Artefatti del confronto appaiato in
 `/mnt/shared/predictive-maintenance/processed/loco_rms_comparison/`:
@@ -224,3 +380,205 @@ coincidevano entro `1e-5`, la loss entro `1e-9`, e il round-trip save/load
 preservava le predizioni. Quattro test mirati erano passati. La verifica
 supporta il corretto funzionamento di quel percorso, non certifica l'intera
 libreria.
+
+## Validazione aggiuntiva e percorso verso la decisione
+
+La priorità immediata è definire requisiti decisionali verificabili
+(preavviso minimo, cadenza delle misure e costo relativo di guasti mancati,
+ispezioni e sostituzioni non necessarie), poi valutare soglie e politiche con
+validazione annidata. I benchmark pubblici già analizzati restano verifiche
+metodologiche separate: non si uniscono campioni né si confrontano direttamente
+metriche ottenute con target e protocolli diversi. XJTU-SY è il controllo più
+pertinente per i cuscinetti e ha cadenza dichiarata di un minuto; C-MAPSS
+verifica la pipeline RUL su un componente diverso.
+
+### C-MAPSS: benchmark metodologico su un altro componente
+
+C-MAPSS contiene traiettorie multivariate di motori turbofan simulate, con più
+unità, sensori e condizioni operative. I set di training arrivano al guasto;
+per le traiettorie di test sono fornite le RUL reali. È quindi adatto a
+verificare la pipeline di prognostica su più traiettorie e condizioni, ma non
+è un dataset di macchine industriali misurate sul campo e non fornisce
+evidenza diretta sui cuscinetti.
+
+Fonte e descrizione: [NASA C-MAPSS](https://data.nasa.gov/dataset/cmapss-jet-engine-simulated-data).
+
+Attività:
+
+1. Verificare fonte di download, termini d'uso, struttura e checksum dei file.
+2. Implementare un loader e una pipeline C-MAPSS indipendenti dalla pipeline
+   FEMTO; conservare i dati grezzi fuori da Git.
+3. Rispettare la suddivisione ufficiale train/test; separare unità durante
+   validazione e scelta del modello, evitando leakage tra cicli della stessa
+   unità.
+4. Valutare la stima RUL con metriche adatte alla prognostica e riportare i
+   risultati per unità e per sottoinsieme, senza riutilizzare h20 come se fosse
+   un'etichetta equivalente.
+
+### XJTU-SY: benchmark aggiuntivo specifico per cuscinetti
+
+La descrizione del dataset sul [sito dell'autore](https://biaowang.tech/xjtu-sy-bearing-datasets/)
+riporta prove accelerate run-to-failure su 15 cuscinetti LDK UER204: cinque
+per ciascuna di tre condizioni (2100 rpm/12 kN, 2250 rpm/11 kN e
+2400 rpm/10 kN). Due accelerometri misurano vibrazioni orizzontali e
+verticali a 25,6 kHz; ciascuna acquisizione contiene 32.768 campioni, pari a
+1,28 s, ed è ripetuta ogni minuto. I file CSV hanno due colonne, una per asse.
+La fonte descrive anche i guasti osservati e le vite dei singoli cuscinetti;
+richiede di citare la pubblicazione associata quando i dati vengono usati.
+
+Questo dataset è più pertinente al componente di interesse e permette di
+esprimere l'orizzonte in tempo: venti intervalli di campionamento corrispondono
+a circa 20 minuti (tra la prima e la ventesima acquisizione ci sono 19 minuti).
+La definizione di fine vita e di qualsiasi target dovrà comunque essere
+verificata dalla documentazione dei file prima di applicare un'etichetta come
+h20. Le prove sono accelerate e da banco: più cuscinetti e una cadenza nota
+migliorano la valutazione sperimentale, ma non dimostrano la trasferibilità a
+un impianto reale.
+
+Fonte descrittiva e collegamenti di download: [XJTU-SY Bearing Datasets](https://biaowang.tech/xjtu-sy-bearing-datasets/).
+
+Attività:
+
+1. Verificare accessibilità, condizioni di riuso, formato e metadati prima di
+   scaricare i dati; registrare fonte e checksum.
+2. Costruire un loader separato e documentare frequenza/cadenza delle misure,
+   condizioni operative e criterio di fine vita.
+3. Definire prima dell'analisi se il task è classificazione di allarme,
+   rilevamento del degrado o stima RUL. Non assumere che h20 abbia lo stesso
+   significato o la stessa durata temporale di FEMTO.
+4. Valutare per cuscinetto, lasciando fuori esemplari interi; tenere separata
+   la selezione di feature/politica dalla valutazione finale.
+
+### Protocollo comune e limiti della conclusione
+
+- Mantenere FEMTO come benchmark originale e conservare distinti risultati
+  standard e risultati con oversampling.
+- Per ogni benchmark pubblicare split, target, unità di valutazione, metriche,
+  numero di unità e incertezze; non aggregare i punteggi tra dataset.
+- Non fissare adesso pesi di uno score composito o soglie di accettazione
+  industriale: devono derivare dai costi di mancato allarme, fermo macchina,
+  ispezione e sostituzione, concordati con i responsabili della manutenzione.
+- I benchmark pubblici possono sostenere una valutazione di ricerca, ma non
+  bastano a decidere la sostituzione di un cuscinetto in impianto. Per quello
+  serviranno dati rappresentativi dell'impianto, etichette da ispezioni e
+  manutenzioni documentate, validazione indipendente e una fase in shadow mode
+  con decisione umana.
+
+### Stato e prossime azioni
+
+I due dataset sono stati scaricati, estratti e spostati nell'area condivisa
+`/mnt/shared/predictive-maintenance/`, seguendo la struttura usata per FEMTO:
+
+- C-MAPSS: archivio `downloads/CMAPSSData.zip`; dati estratti in
+  `raw/cmapss/`. L'integrità dello ZIP è stata verificata; sono presenti i
+  quattro file di training, i quattro di test, i quattro file RUL e i due
+  documenti di accompagnamento.
+- XJTU-SY: i sei volumi RAR sono in `downloads/`; dati estratti in
+  `raw/xjtu_sy/`. Sono presenti 15 directory bearing in tre condizioni e
+  9.216 CSV, oltre al PDF introduttivo. I volumi RAR sono stati conservati;
+  non è stata eseguita una verifica indipendente dell'integrità RAR.
+
+È stato aggiunto lo script riproducibile
+`scripts/analyze_public_datasets.py`, con loader separati per i due formati.
+I test mirati e l'intera suite unit test sono passati (23 test).
+
+#### Prima analisi C-MAPSS
+
+È stata eseguita una regressione ridge su RUL in cicli. La regolarizzazione è
+selezionata con 5-fold CV raggruppata per motore e MAE medio per motore; il
+test ufficiale usa un solo campione finale per ciascuna unità e le etichette
+RUL fornite. Il confronto baseline usa il solo ciclo operativo; l'altro modello
+usa ciclo, condizioni operative e 21 sensori.
+
+| Sottoinsieme | Motori train/test | MAE test: ciclo | MAE test: ciclo + condizioni + sensori | MAE OOF medio per motore |
+|---|---:|---:|---:|---:|
+| FD001 | 100 / 100 | 33,81 | 25,93 | 30,76 |
+| FD002 | 260 / 259 | 35,32 | 26,36 | 31,17 |
+| FD003 | 100 / 100 | 58,99 | 45,32 | 44,11 |
+| FD004 | 249 / 248 | 54,46 | 38,14 | 41,67 |
+
+Il modello con sensori migliora il baseline ciclo-only in tutti e quattro i
+test ufficiali, ma l'errore resta ampio e aumenta nei sottoinsiemi FD003/FD004.
+È un benchmark ridge semplice, non un confronto con metodi allo stato
+dell'arte; le metriche C-MAPSS non sono confrontabili numericamente con quelle
+dei cuscinetti. Predizioni e dettaglio completo:
+`/mnt/shared/predictive-maintenance/processed/public_datasets/cmapss_rul_analysis.json`
+e `cmapss_rul_test_predictions.csv`.
+
+#### Analisi XJTU-SY
+
+Nota metodologica: il confronto iniziale tra modello completo (tempo trascorso,
+condizioni operative e feature vibrazionali) e baseline non isolava il
+contributo delle vibrazioni. È stata quindi completata un'ablazione
+leave-one-bearing-out sugli stessi split: tempo soltanto, vibrazioni soltanto,
+tempo più vibrazioni e contesto operativo più vibrazioni. Le feature vengono
+standardizzate sul training di ogni piega; i parametri e gli split non vengono
+scelti sul bearing escluso.
+
+Sono state estratte 10 feature temporali per acquisizione dai due canali
+(RMS, deviazione standard, picco-picco, massimo assoluto e kurtosis). Il target
+è il numero di intervalli di un minuto fino all'ultima acquisizione del run.
+La valutazione lascia fuori un bearing intero; il ridge standardizzato usa
+alpha=1 e viene confrontato con la mediana della vita residua degli altri
+bearing della stessa condizione. Il target è una RUL osservata retrospettiva,
+non una prognosi verificata prima del guasto.
+
+| Condizione | Acquisizioni | MAE medio per bearing: ridge (min) | MAE medio per bearing: baseline (min) | Bearing in cui ridge migliora |
+|---|---:|---:|---:|---:|
+| 35 Hz / 12 kN | 616 | 60,9 | 37,8 | 1/5 |
+| 37,5 Hz / 11 kN | 1.566 | 416,4 | 205,8 | 1/5 |
+| 40 Hz / 10 kN | 7.034 | 797,9 | 1.153,7 | 4/5 |
+| Macro media dei 15 bearing | 9.216 | 425,0 | 465,8 | 6/15 |
+
+Il risultato aggregato favorisce di poco il ridge, ma non è coerente tra le
+condizioni: il baseline è migliore nelle prime due, mentre il ridge è migliore
+nella terza. Inoltre la condizione 40 Hz contiene il 76% delle acquisizioni,
+quindi le metriche aggregate per campione sono dominate da quella condizione.
+Con cinque bearing per condizione, questo è un risultato esplorativo e non
+dimostra una regola trasferibile di sostituzione. Predizioni e metriche
+dettagliate sono in
+`/mnt/shared/predictive-maintenance/processed/public_datasets/xjtu_sy_rul_analysis.json`
+e `xjtu_sy_rul_oof_predictions.csv`.
+
+##### Ablazione del contributo delle vibrazioni
+
+La tabella riporta la MAE media per bearing (minuti), con ogni bearing pesato
+allo stesso modo:
+
+| Modello | 35 Hz / 12 kN | 37,5 Hz / 11 kN | 40 Hz / 10 kN | Macro media dei 15 bearing |
+|---|---:|---:|---:|---:|
+| Solo tempo trascorso | 963,8 | 874,3 | 729,7 | 855,9 |
+| Sole vibrazioni | 546,9 | 584,3 | 579,3 | 570,2 |
+| Tempo + vibrazioni | 661,0 | 717,8 | 606,1 | 661,6 |
+| Tempo + contesto operativo + vibrazioni | 60,9 | 416,4 | 797,9 | 425,0 |
+| Baseline: vita mediana per condizione | 37,8 | 205,8 | 1.153,7 | 465,8 |
+
+Rispetto al modello con solo tempo, aggiungere le vibrazioni riduce la macro
+MAE da 855,9 a 661,6 minuti (22,7%) e migliora 11 bearing su 15: in questo
+protocollo le vibrazioni contengono quindi un segnale predittivo incrementale,
+ma non uniforme. Il modello completo con contesto operativo e vibrazioni ha
+una macro MAE di 425,0 minuti contro 465,8 del baseline, ma batte il baseline
+solo in 6 bearing su 15 (1/5 a 35 Hz, 1/5 a 37,5 Hz e 4/5 a 40 Hz). Il
+vantaggio aggregato non si trasferisce in modo coerente tra condizioni.
+
+Il target resta retrospettivo: per ogni acquisizione è il tempo fino all'ultima
+registrazione del run-to-failure, senza una finestra di anticipo minimo
+predefinita. Il leave-one-bearing-out testa un bearing nuovo solo nelle tre
+condizioni già viste nel training; non verifica condizioni nuove, prestazioni
+in shadow mode o decisioni industriali.
+
+Prossimi passi:
+
+1. Definire un anticipo utile per la manutenzione e ripetere la valutazione
+   usando solo finestre disponibili a quell'anticipo, con metriche di allarme
+   coerenti con il costo di falsi allarmi e guasti mancati.
+2. Valutare la generalizzazione a condizioni operative non viste e, se
+   possibile, a ulteriori bearing e dataset; mantenere separati C-MAPSS,
+   XJTU-SY e FEMTO.
+3. Solo dopo aver concordato requisiti e costi con i responsabili manutenzione,
+   validare su dati di impianto etichettati da ispezioni/manutenzioni e in
+   shadow mode. Non scegliere soglie industriali dai benchmark pubblici.
+
+Conclusione corrente: il progetto può dimostrare la pipeline e confrontare
+metodi su benchmark pubblici; non è ancora in grado di sostenere una decisione
+industriale di sostituzione basata solo sul modello.

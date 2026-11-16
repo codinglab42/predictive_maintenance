@@ -133,6 +133,10 @@ python scripts/validate_loco_policies.py \
   --output-dir /mnt/shared/predictive-maintenance/processed
 ```
 
+L'opzione legacy `--weighted-loss` attiva oversampling della classe
+minoritaria nel training, non una loss pesata. Non usarla per il confronto
+standard; il JSON registra la modalità di campionamento usata.
+
 Il file CSV generato riporta probabilità e notifica per campione; il JSON
 riassume metriche per condizione e per obiettivo, in modo da confrontare la
 baseline LOCO con la validazione leave-one-bearing-out esistente.
@@ -228,6 +232,83 @@ python scripts/predict_machine.py --signal-csv data/raw/femto/Learning_set/Beari
 ```
 
 Puoi sovrascrivere la soglia usata per l'alert con `--threshold 0.4`.
+
+## Cruscotto di replay FEMTO
+
+Per visualizzare lo stato dei sei cuscinetti del benchmark, l'andamento RMS e
+le notifiche della validazione LOCO:
+
+```bash
+streamlit run scripts/dashboard.py
+```
+
+Il cruscotto usa `processed/femto_features.npz` e
+`processed/loco_rms_comparison/femto_loco_h20_alarm_predictions.csv` nella
+cartella condivisa `/mnt/shared/predictive-maintenance/`. Se i file si trovano
+altrove, cambia i percorsi nella barra laterale dell'app. La barra laterale
+indica anche il dataset FEMTO/PRONOSTIA, l'accelerazione vibratoria misurata sui
+due assi e l'RMS orizzontale mostrato nel grafico; l'unità non è specificata
+negli artefatti utilizzati.
+
+L'interfaccia ha le schede **Quadro d'insieme** e **Dettaglio**. Selezionando
+una scheda cuscinetto nel quadro d'insieme si apre il relativo dettaglio con
+lo stato, lo score e il grafico.
+
+Il cursore **Posizione nella sequenza storica (%)** confronta i cuscinetti alla
+stessa percentuale della rispettiva sequenza; non rappresenta tempo reale.
+Verde indica score sotto la soglia sperimentale,
+giallo un superamento non ancora confermato, rosso una notifica emessa dalla
+policy LOCO e da sottoporre a verifica del manutentore; lo sfondo dei pulsanti
+nel quadro d'insieme riprende il colore dello stato. Il rosso resta attivo
+nel replay perché non sono disponibili dati di presa in carico o risoluzione.
+È un prototipo dimostrativo basato su sei prove accelerate: non è collegato a
+sensori live, lo score non è calibrato e i colori non sono validati per
+decisioni operative o sostituzioni.
+
+## Analisi esplorativa dei dataset pubblici
+
+Oltre a FEMTO, il progetto include analisi indipendenti di NASA C-MAPSS e
+XJTU-SY. Con i dati nella cartella condivisa prevista, esegui:
+
+```bash
+python scripts/analyze_public_datasets.py
+```
+
+Il comando si aspetta `raw/cmapss/` e `raw/xjtu_sy/` sotto
+`/mnt/shared/predictive-maintenance/`. È possibile indicare un'altra radice e
+cartella risultati:
+
+```bash
+python scripts/analyze_public_datasets.py \
+  --data-root /path/to/predictive-maintenance/raw \
+  --output-dir /path/to/predictive-maintenance/processed/public_datasets
+```
+
+L'analisi C-MAPSS stima la RUL in cicli con una regressione ridge e seleziona
+la regolarizzazione tramite cross-validation a cinque fold raggruppata per
+motore; riporta anche un baseline basato solo sul ciclo e valuta i modelli
+sulle etichette RUL ufficiali del test. XJTU-SY confronta, sugli stessi
+split leave-one-bearing-out, regressori ridge con solo tempo trascorso, sole
+feature vibrazionali, tempo più vibrazioni e contesto operativo più vibrazioni.
+Il baseline stima la vita tipica della condizione usando gli altri cuscinetti
+della stessa condizione. La RUL è il numero di intervalli di campionamento di
+un minuto fino all'ultima acquisizione registrata nel run-to-failure.
+Nell'ablazione XJTU-SY, il modello tempo più vibrazioni ha ridotto la macro
+MAE per bearing da 855,9 a 661,6 minuti rispetto al solo tempo (migliora in
+11/15 bearing). Il modello completo ha ottenuto 425,0 minuti contro 465,8 del
+baseline per condizione, ma il vantaggio varia tra le condizioni. È un
+risultato retrospettivo ed esplorativo, non una validazione per decisioni
+industriali.
+
+I risultati sono salvati in JSON e CSV sotto `processed/public_datasets/`.
+Le feature XJTU-SY estratte sono memorizzate in
+`xjtu_sy_features_cache.npz`; il manifest dei percorsi, dimensioni e date
+modifica evita di riusare la cache se i file cambiano. Per forzare l'estrazione
+si può aggiungere `--refresh-xjtu-cache`. Le metriche dei dataset non vanno
+aggregate o interpretate come prova diretta di prestazioni industriali o di
+una decisione di sostituzione.
+Fonti: [NASA C-MAPSS](https://data.nasa.gov/dataset/cmapss-jet-engine-simulated-data)
+e [XJTU-SY Bearing Datasets](https://biaowang.tech/xjtu-sy-bearing-datasets/).
 
 ## Test
 
