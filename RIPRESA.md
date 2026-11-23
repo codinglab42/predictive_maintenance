@@ -1,37 +1,102 @@
-# Ripresa: manutenzione predittiva FEMTO/PRONOSTIA
+# Ripresa: manutenzione predittiva NASA IMS
 
-## Scopo, dati e obiettivo
+## Stato corrente (23 novembre 2026)
 
-La finalità applicativa è supportare la decisione di sostituire un cuscinetto
-prima del guasto, usando le vibrazioni come indicatore del rischio. Il lavoro
-corrente è ancora una valutazione sperimentale retrospettiva: verifica se il
-segnale anticipa il termine delle sequenze e se il metodo trasferisce a
-cuscinetti e condizioni operative non usati per addestramento o selezione.
-Non è ancora una regola di sostituzione validata in esercizio né una diagnosi
-fisica del guasto.
+Il dataset principale del progetto è ora NASA IMS Bearing. L'archivio ufficiale
+è stato scaricato in
+`/mnt/shared/predictive-maintenance/downloads/ims_bearings.zip`; il pacchetto
+contiene un 7z annidato, che a sua volta contiene gli archivi RAR di `1st_test`,
+`2nd_test` e `3rd_test`. L'estrazione è completa nella cartella locale esclusa
+da Git `predictive_maintenance/data/raw/ims/`; le feature sono state elaborate,
+il modello è stato addestrato e la verifica su `2nd_test` è stata eseguita.
+Le cache delle feature e i risultati sono in
+`/mnt/shared/predictive-maintenance/processed/`.
 
-Si usa il dataset NASA FEMTO/PRONOSTIA: 7.534 acquisizioni per sei cuscinetti
-run-to-failure, due per ciascuna delle tre condizioni operative. Ogni
-acquisizione fornisce due canali di vibrazione; da ciascun canale si estraggono
-RMS, deviazione standard, picco-picco, massimo assoluto, crest factor e
-kurtosis (12 feature complessive). Il target corrente h20 marca positive le
-ultime 20 acquisizioni di ogni sequenza: 120 positivi in totale, circa 1,59%.
+Preparazione e protocollo richiesti:
 
-Obiettivo sperimentale immediato: confrontare la regressione logistica con
-baseline semplici sulle stesse partizioni Leave-One-Condition-Out (LOCO),
-selezionando ogni politica solo sui dati interni e misurando rilevamenti,
-falsi allarmi e tempistica delle notifiche. h20 (ultime 20 acquisizioni) è
-solo una proxy del guasto imminente, non un'etichetta osservata di
-"sostituire/non sostituire". Per tradurre il rischio in una decisione servono
-anche una finestra di intervento espressa in tempo reale, i costi di un guasto
-mancato e di un'ispezione non necessaria, e la cadenza delle acquisizioni.
-Con soli sei cuscinetti, i risultati attuali non stimano le prestazioni di una
-regola industriale.
+- Ogni file viene ordinato per il timestamp nel nome. Per ciascun bearing si
+  calcolano RMS, deviazione standard, curtosi, asimmetria, picco-picco e
+  fattore di cresta. Il cruscotto usa i timestamp effettivi senza assumere
+  cadenza fissa: nei primi due file di `1st_test` la differenza è 2 min 49 s.
+- In `1st_test` ci sono otto colonne, due per bearing: le sei statistiche
+  vengono calcolate separatamente sui due canali e poi mediate per ottenere un
+  vettore di sei feature. `2nd_test` e `3rd_test` hanno una colonna per bearing.
+- Nell'archivio NASA la terza serie è contenuta sotto `4th_test/txt`; lo script
+  di estrazione normalizza questa directory in `3rd_test/txt`.
+- Tutti i campioni dei bearing sani hanno target 0. Per i bearing che
+  terminano in guasto, il primo 75% della sequenza è etichettato 0 e l'ultimo
+  25% 1: bearing 3 e 4 di `1st_test`, bearing 1 di `2nd_test`, bearing 3 di
+  `3rd_test`.
+- `1st_test` e `3rd_test` formano il training; `2nd_test` resta separato per
+  l'inferenza. Prima dello scaler, ogni bearing viene centrato sottraendo a
+  tutte le sue feature la media delle prime 30 acquisizioni cronologiche. Per
+  il test si usano solo le feature non etichettate dei suoi primi 30 file; lo
+  scaler viene comunque fit-tato solo sul training.
+- Il modello principale è l'MLP C++ esposto via pybind11 con architettura
+  `6-12-1`, ReLU e Sigmoid, learning rate `0.001`, 60 epoche e regolarizzazione
+  L2 (`0.01`). La pipeline usa `predict_proba` per il punteggio Sigmoide; il
+  metodo `predict` del binding può restituire classi 0/1. La soglia MLP viene
+  selezionata esplorativamente sul `2nd_test`; le metriche così ottenute non
+  sono una valutazione indipendente.
+- L'entry point principale è `scripts/train_predictive_maintenance.py`;
+  la pipeline storica FEMTO resta disponibile in
+  `scripts/train_femto_predictive_maintenance.py`.
+- Il cruscotto riproduce in ordine cronologico le quattro sequenze di
+  `2nd_test`; preimposta la soglia MLP selezionata e permette di regolarla.
+  Sopra soglia mostra l'avviso **“Consigliato controllo/sostituzione”**.
 
-Per la fase attuale l'output desiderato è un allarme che richieda un'ispezione;
-la decisione di sostituzione resta a una persona. Il preavviso utile e il
-compromesso accettabile tra guasti mancati e ispezioni non necessarie sono
-ancora da definire.
+La soglia e le etichette sono una convenzione sperimentale richiesta per questo
+benchmark, non una regola operativa validata. Il punteggio non è calibrato e
+l'avviso richiede verifica umana; non autorizza né prescrive una sostituzione.
+Il lavoro precedente su FEMTO/PRONOSTIA resta documentato nelle sezioni
+storiche seguenti e nella pipeline secondaria.
+
+### Risultati IMS riproducibili
+
+La rete C++ usa il seed `42`. Con le nuove impostazioni, `predict_proba`
+restituisce 3.825 valori distinti sui 3.936 campioni del test. Il CSV delle
+predizioni a soglia 0,999 ha SHA-256
+`d075eed74353471f55a12fff6d04ffb8bc8baefed31f6b64b81403562db68333`.
+
+| Modello sul `2nd_test` | Soglia | Precision | Recall | F1-Score |
+|---|---:|---:|---:|---:|
+| Rete neurale C++ (`6-12-1`, tuning esplorativo) | 0,999 | 0,7524 | 0,6423 | 0,6930 |
+| Regressione logistica (baseline) | 0,70 | 0,7688 | 0,5000 | 0,6059 |
+
+Tutti e quattro i bearing sono verdi al file 1. Bearing 1 supera la soglia per
+la prima volta al file **703**, prima dell'inizio della coda target proxy al
+file **739**. A soglia 0,999 i conteggi sono Bearing 1 **194/984**, Bearing 2
+**9/984**, Bearing 3 **0/984**, Bearing 4 **7/984**; i primi allarmi dei
+bearing 2 e 4 sono rispettivamente ai file 891 e 972. La normalizzazione
+elimina quindi l'allarme iniziale del Bearing 3 e, fino al file 739, il solo
+allarme è quello anticipato sul Bearing 1; restano falsi allarmi tardivi sui
+bearing sani 2 e 4.
+
+| Soglia | Precision | Recall | F1-Score | Allarmi sani (B2+B3+B4) |
+|---:|---:|---:|---:|---:|
+| 0,50 | 0,5152 | 0,6911 | 0,5903 | 102 |
+| 0,65 | 0,5611 | 0,6911 | 0,6193 | 81 |
+| 0,75 | 0,5914 | 0,6707 | 0,6286 | 66 |
+| 0,80 | 0,6052 | 0,6667 | 0,6344 | 60 |
+| 0,85 | 0,6236 | 0,6667 | 0,6444 | 53 |
+| 0,90 | 0,6560 | 0,6667 | 0,6613 | 40 |
+| 0,95 | 0,6849 | 0,6626 | 0,6736 | 32 |
+| 0,97 | 0,7026 | 0,6626 | 0,6820 | 27 |
+| 0,99 | 0,7207 | 0,6504 | 0,6838 | 24 |
+| 0,995 | 0,7407 | 0,6504 | 0,6926 | 19 |
+| 0,999 (selezionata) | 0,7524 | 0,6423 | 0,6930 | 16 |
+
+Il training contiene 33.920 campioni (2.659 positivi); `2nd_test` contiene
+3.936 campioni (246 positivi). La soglia è `probabilità > 0,999`.
+
+| Run | Fit rete neurale | Fit logistica | Verifica rete neurale | Verifica logistica | Totale fit + verifica |
+|---|---:|---:|---:|---:|---:|
+| Fit/verifica su feature cache | 1,417 s | 2,354 s | 0,002 s | < 0,001 s | 3,774 s |
+
+I tempi comprendono fit, predizione sul test e calcolo delle metriche; escludono
+estrazione feature, baseline normalization, scaling e scrittura degli
+artefatti. La selezione della soglia usa le etichette del test ed è
+esplorativa, non una stima indipendente della generalizzazione.
 
 ### Indicazioni tecniche reperite per definire i requisiti
 
@@ -72,7 +137,7 @@ Fonti consultate il 12 novembre 2026:
 - [NASA Prognostics Data Repository](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/),
   descrizione e avvertenza sull'uso dei dataset.
 
-## Stato corrente (12 novembre 2026)
+## Stato storico FEMTO (12 novembre 2026)
 
 Il lavoro corrente cerca di capire se le feature di vibrazione consentono di
 anticipare il termine delle sequenze e di sostenere la decisione di
@@ -321,6 +386,28 @@ Artefatti del confronto appaiato in
 `femto_loco_h20_alarm_predictions.csv`,
 `femto_loco_rms_baseline_h20_results.json` e
 `femto_loco_rms_baseline_h20_predictions.csv`.
+
+### Aggiornamento 17 novembre 2026: previsione dalla dashboard
+
+La dashboard mantiene il replay storico e aggiunge la scheda **Nuova
+acquisizione**, con caricamento CSV a 6 colonne FEMTO o 2 canali numerici. Il
+percorso di previsione è condiviso con il CLI tramite `src/predictor.py`;
+percorsi e checksum degli artefatti sono condivisi in `src/model_artifacts.py`.
+Modello e preprocessing vengono controllati prima di abilitare la previsione.
+La GUI blocca gli artefatti non validi o con checksum discordante, avvisa per
+i metadati legacy senza checksum e mostra score, soglia e orizzonte solo dopo
+una previsione riuscita. Un CSV non valido mostra l'errore e non può essere
+analizzato; se cambiano segnale o soglia, la previsione precedente viene
+invalidata. Il replay usa ancora predizioni LOCO pre-calcolate: la nuova
+scheda non è collegata a sensori live e il punteggio resta sperimentale, non
+calibrato e non utilizzabile per comandare una sostituzione.
+
+Il caricamento dei CSV e la gestione del checksum sono coperti da test mirati;
+la suite completa passa con 36 test. È stata verificata anche una previsione
+end-to-end dalla GUI con un CSV sintetico. Gli artefatti locali usati per
+questa prova hanno metadati legacy, quindi la GUI mostra correttamente
+l'avviso di checksum non verificabile. Da verificare dopo un nuovo training
+il percorso con checksum registrato e quello con checksum non corrispondente.
 
 ## Sintesi del lavoro storicizzato
 
@@ -581,6 +668,83 @@ Prossimi passi:
 3. Solo dopo aver concordato requisiti e costi con i responsabili manutenzione,
    validare su dati di impianto etichettati da ispezioni/manutenzioni e in
    shadow mode. Non scegliere soglie industriali dai benchmark pubblici.
+
+### Miglioramenti prioritari (18 novembre 2026)
+
+Il progetto è già in grado di dimostrare replay storico, previsione su una
+nuova acquisizione, controlli degli artefatti e confronti su benchmark
+pubblici. Il miglioramento successivo deve renderlo più affidabile come
+supporto decisionale, non limitarsi ad aumentare la complessità dei modelli.
+
+1. **Definire il processo operativo.** Concordare con la manutenzione il
+   preavviso minimo in unità di tempo reale, il costo di un'ispezione inutile,
+   il costo di un guasto mancato e il costo di fermo/danno. Definire chi
+   conferma un allarme, chi effettua l'ispezione e cosa accade dopo
+   l'ispezione. h20 deve restare una proxy storica finché questi requisiti
+   non sono formalizzati.
+2. **Valutare decisioni, non solo punteggi.** Separare punteggio continuo,
+   soglia, conferma consecutiva, cooldown, escalation e presa in carico.
+   Selezionare soglia e politica con una funzione di costo, mantenendo h20 come
+   benchmark storico. Le metriche principali devono includere recall per
+   evento, falsi allarmi per ora o per unità, distribuzione del preavviso,
+   rilevamento precoce/tardivo e costo atteso. Precisione, recall e curva
+   precisione/recall devono essere riportati per condizione e per bearing.
+3. **Usare unità temporali reali.** Verificare la cadenza effettiva di FEMTO
+   e XJTU-SY; distinguere ore, minuti e acquisizioni senza convertirli
+   automaticamente. Definire finestre coerenti con approvvigionamento,
+   pianificazione e tempi di verifica. La finestra 10–50 acquisizioni resta
+   esplorativa fino alla decisione operativa.
+4. **Rafforzare la validazione.** Usare selezione nested per soglia, conferma
+   e cooldown sui soli dati interni; evitare mescolamento temporale tra
+   training e test; utilizzare split raggruppati per bearing, unità o motore;
+   testare condizioni non viste e dati successivi nel tempo. Con soli sei
+   bearing FEMTO, più dataset o più esemplari sono necessari prima di stimare
+   la prestazione industriale.
+5. **Calcolare intervalli di confidenza.** Integrare bootstrap raggruppato per
+   bearing, unità o condizione. Esporre valori centrali e dispersione per
+   F1, recall, falsi allarmi, lead time e costo atteso, senza presentare
+   esiti su pochi esemplari come prestazioni certe.
+6. **Migliorare feature e modelli con metodo incrementale.** Mantenere
+   regressione logistica, ridge e baseline semplici come riferimento. In
+   seguito confrontare gradient boosting, modelli temporali e reti ricorrenti
+   solo se migliorano un protocollo preventivamente fissato. Estendere le
+   feature a carico, velocità, temperatura, spettro, ore operative e contesto
+   della macchina. Normalizzare differenze individuali e valutare
+   l'incertezza predittiva.
+7. **Tenere separati i risultati dei benchmark.** C-MAPSS, XJTU-SY e FEMTO
+   hanno obiettivi e unità diverse e non devono essere messi insieme in una
+   singola graduatoria. Conservare i metadati di training, oversampling,
+   selezione della soglia, split e preprocessing accanto a ogni artefatto.
+8. **Completare il workflow umano.** Integrazione, presa in carico, annotazione
+   dell'esito, ispezione, intervento, risoluzione e audit trail devono essere
+   stati espliciti della dashboard. Il rosso deve significare "verifica umana
+   da valutare", mai sostituzione o arresto automatico.
+9. **Tracciare eventi reali.** Dopo un pilota controllato, registrare
+   timestamp, bearing/macchina, score, soglia, modello e checksum, evidenze,
+   esito dell'ispezione, intervento e riscontro successivo. Questi dati
+   alimenteranno una valutazione temporale, non soltanto nuovi esperimenti
+   retrospettivi.
+10. **Monitorare il sistema in esercizio.** Controllare deriva delle
+    feature, deriva del sensore, distribuzione dei punteggi, falsi allarmi,
+    prestazioni per macchina/condizione e compatibilità degli artefatti.
+    Calibrare il modello solo su dati approvati e bloccare previsione o replay
+    quando modello, preprocessing e checksum non sono coerenti.
+11. **Completare la riproducibilità da zero.** Versionare dipendenze
+    e environment lock, dati e istruzioni di acquisizione, comandi verificati,
+    artefatti attesi e script di analisi. Estendere la CI oltre i test mirati
+    con test di integrazione per training, validazione, caricamento GUI e
+    pipeline end-to-end.
+
+Ordine consigliato:
+
+1. requisiti di preavviso e costi;
+2. metrica costo-beneficio e finestre temporali;
+3. selezione nested e intervalli di confidenza;
+4. verifica della cadenza reale;
+5. ampliamento del dataset;
+6. presa in carico e annotazione umana;
+7. pilota chiuso in shadow mode;
+8. modelli più complessi solo dopo una baseline robusta.
 
 Conclusione corrente: il progetto può dimostrare la pipeline e confrontare
 metodi su benchmark pubblici; non è ancora in grado di sostenere una decisione

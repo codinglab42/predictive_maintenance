@@ -4,20 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import json
-from pathlib import Path
 
-import numpy as np
-
-from src.femto_data import FEATURE_NAMES, read_signal_features
-from src.ml_core_loader import load_ml_core
-from train_predictive_maintenance import METADATA_PATH, MODEL_PATH
+from src.femto_data import read_signal_features
+from src.model_artifacts import METADATA_PATH, MODEL_PATH
+from src.predictor import load_prediction_config, predict_features
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,35 +38,27 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if not MODEL_PATH.is_file() or not METADATA_PATH.is_file():
-        raise FileNotFoundError("model not found; run train_predictive_maintenance.py first")
-
-    metadata = json.loads(METADATA_PATH.read_text(encoding="utf-8"))
-    if metadata.get("format_version") != 2:
-        raise ValueError("saved model is not a FEMTO model; retrain with the current pipeline")
-    if metadata.get("feature_names") != FEATURE_NAMES:
-        raise ValueError("saved feature schema does not match this version of the pipeline")
-
-    means = np.asarray(metadata.get("means"), dtype=np.float64)
-    scales = np.asarray(metadata.get("scales"), dtype=np.float64)
-    if means.shape != (len(FEATURE_NAMES),) or scales.shape != means.shape:
-        raise ValueError("saved preprocessing parameters are malformed; retrain the model")
-    if not np.isfinite(means).all() or not np.isfinite(scales).all() or np.any(scales <= 0):
-        raise ValueError("saved preprocessing parameters are invalid; retrain the model")
-
-    threshold = metadata["threshold"] if args.threshold is None else args.threshold
-    features = read_signal_features(args.signal_csv).reshape(1, -1)
-    features = np.asfortranarray((features - means) / scales)
-    model = load_ml_core().LogisticRegression()
-    model.load(str(MODEL_PATH))
-    probability = float(np.asarray(model.predict(features)).reshape(-1)[0])
+    config = load_prediction_config(MODEL_PATH, METADATA_PATH)
+    if not config.checksum_verified:
+        logging.warning(
+            "model metadata has no checksum; artifact pairing cannot be verified. "
+            "Retrain the model to record it."
+        )
+    features = read_signal_features(args.signal_csv)
+    result = predict_features(features, config, args.threshold)
 
     print(
-        f"Estimated failure probability within {metadata['horizon_acquisitions']} "
-        f"acquisitions: {probability:.1%}"
+        f"Estimated failure probability within {result.horizon_acquisitions} "
+        f"acquisitions: {result.probability:.1%}"
     )
-    print("Alert: YES" if probability >= threshold else "Alert: NO")
-    print(f"Threshold: {threshold:.1%}")
+    print("Alert: YES" if result.probability >= result.threshold else "Alert: NO")
+    print(f"Threshold: {result.threshold:.1%}")
+    print(f"Threshold source: {result.threshold_source}")
+    print(f"Signal: {args.signal_csv.expanduser().resolve()}")
+    print(f"Model: {config.model_path}")
+    print(f"Model SHA-256: {result.model_sha256}")
+    checksum_status = "verified" if result.checksum_verified else "not verifiable (legacy metadata)"
+    print(f"Checksum status: {checksum_status}")
 
 
 if __name__ == "__main__":

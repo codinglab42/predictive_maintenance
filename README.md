@@ -1,9 +1,10 @@
 # Manutenzione predittiva
 
-Pipeline dimostrativa basata sulle misure sperimentali di vibrazione dei
-cuscinetti NASA FEMTO/PRONOSTIA. Scarica ed estrae il dataset, ricava feature
-temporali dai canali orizzontale e verticale, addestra una regressione logistica
-e salva modello e preprocessing.
+Pipeline sperimentale basata principalmente sul dataset NASA IMS Bearing.
+Estrae feature vibrazionali dai tre test IMS, addestra un MLP implementato in
+C++ e accessibile tramite pybind11 e usa il `2nd_test` come verifica tenuta
+separata. La regressione logistica è mantenuta come benchmark. FEMTO/PRONOSTIA
+resta disponibile come pipeline secondaria.
 
 I dati provengono da prove accelerate di laboratorio, non da macchine in
 produzione. Le metriche sono una verifica tecnica della pipeline e non
@@ -25,7 +26,115 @@ python -m pip install -e .
 cd ../predictive_maintenance
 ```
 
-## Download dei dati
+Per estrarre gli archivi IMS servono inoltre `py7zr`, `libarchive-c` e una
+installazione di sistema di libarchive; i due pacchetti Python sono inclusi in
+`requirements.txt`.
+
+## Dataset principale: NASA IMS
+
+Scarica l'archivio ufficiale del dataset IMS (contiene un 7z annidato, che a sua
+volta contiene gli archivi RAR delle tre serie) ed estrailo nella cartella
+condivisa:
+
+```bash
+mkdir -p /mnt/shared/predictive-maintenance/downloads
+curl -L --fail \
+  'https://phm-datasets.s3.amazonaws.com/NASA/4.+Bearings.zip' \
+  -o /mnt/shared/predictive-maintenance/downloads/ims_bearings.zip
+python scripts/extract_ims.py
+```
+
+Il pacchetto ufficiale è grande circa 1,08 GB. `extract_ims.py` verifica i
+percorsi interni e produce `raw/ims/1st_test`, `raw/ims/2nd_test` e
+`raw/ims/3rd_test`; l'archivio della terza serie contiene internamente la
+cartella `4th_test/txt`, che viene normalizzata a `3rd_test/txt`. Dati grezzi e
+archivi sono esclusi da Git. Per riprendere l'estrazione dai RAR già preparati,
+si può passare la loro cartella con `--archive`.
+
+Per tenere i file grezzi nella cartella locale esclusa da Git invece che nella
+cartella condivisa:
+
+```bash
+python scripts/extract_ims.py --output-dir data/raw/ims
+```
+
+Prepara le feature, addestra la rete neurale C++ tramite pybind11 e il
+benchmark logistico, e valuta entrambi sul `2nd_test`:
+
+```bash
+python scripts/train_predictive_maintenance.py
+```
+
+Se i dati sono stati estratti localmente:
+
+```bash
+python scripts/train_predictive_maintenance.py --data-dir data/raw/ims
+```
+
+Il training usa solo `1st_test` e `3rd_test`. Per ogni bearing e serie, le sei
+feature dei primi 30 file cronologici vengono mediate e sottratte dall'intera
+sequenza; per il `2nd_test` la stessa trasformazione usa soltanto i suoi primi
+30 file, senza etichette. Lo `StandardScaler` è poi fit-tato sul training
+normalizzato e applicato al test senza rifit. Il modello è un MLP C++ `6-12-1`
+con ReLU, output Sigmoid, learning rate `0.001`, 60 epoche e regolarizzazione
+L2 (`0.01`); la pipeline usa `predict_proba` per ottenere i punteggi Sigmoide,
+non le classi di `predict`. Le sei feature sono RMS, deviazione standard,
+curtosi, asimmetria, picco-picco e fattore di cresta. Nel `1st_test` le due
+colonne di ciascun cuscinetto sono elaborate separatamente e le sei feature
+risultanti vengono mediate; nel `2nd_test` e `3rd_test` ogni cuscinetto ha una
+sola colonna.
+L'ordinamento e i grafici usano i timestamp dei file senza imporre intervalli
+fissi: nel `1st_test`, per esempio, i primi due timestamp distano 2 minuti e
+49 secondi.
+
+I bearing sani hanno target 0 in tutti i campioni. Per i bearing indicati come
+guasti nel dataset, il 75% iniziale della sequenza ha target 0 e l'ultimo 25%
+target 1: bearing 3 e 4 in `1st_test`, bearing 1 in `2nd_test`, bearing 3 in
+`3rd_test`. Per i campioni il cui numero non è divisibile per quattro, l'inizio
+della finestra positiva è l'indice `floor(0.75 * N)`.
+
+Il training valuta il MLP alle soglie `0.50`, `0.65`, `0.75`, `0.80`, `0.85`,
+`0.90`, `0.95`, `0.97`, `0.99`, `0.995` e `0.999`, selezionando il massimo F1
+e, a parità, meno allarmi sui bearing sani e poi la soglia maggiore. **Questa
+selezione usa le etichette del `2nd_test`**: i risultati MLP così ottenuti sono
+esplorativi e non costituiscono una verifica indipendente. La regressione
+logistica resta riportata alla soglia baseline `probabilità > 0.7`. Il MLP è salvato in
+`models/ims_neural_network.bin`, la regressione logistica di benchmark in
+`models/ims_logistic_regression.bin`; parametri scaler e checksum sono in
+`models/ims_preprocessing.json`. Le feature e le predizioni cronologiche del
+test e le metriche comparative vengono salvate in
+`/mnt/shared/predictive-maintenance/processed/`.
+Nella verifica corrente la soglia selezionata è `0.999` (Precision `0.7524`,
+Recall `0.6423`, F1 `0.6930`); la regressione logistica ha F1 `0.6059`.
+`predict_proba` produce migliaia di valori distinti. I quattro bearing sono
+verdi al primo file; il primo allarme del Bearing 1 è al file 703, prima
+dell'inizio della coda target al file 739. Bearing 2 e 4 hanno alcuni falsi
+allarmi più tardi (primi allarmi ai file 891 e 972); Bearing 3 non supera la
+soglia selezionata.
+Il training stampa e salva nel JSON anche i tempi di fit e verifica separati
+per MLP e regressione logistica. Per ripetere soltanto fit e verifica usando le
+feature già estratte:
+
+```bash
+python scripts/train_predictive_maintenance.py \
+  --data-dir data/raw/ims \
+  --processed-dir /mnt/shared/predictive-maintenance/processed \
+  --reuse-features
+```
+
+Avvia il cruscotto collegato alle quattro sequenze del `2nd_test`:
+
+```bash
+streamlit run app.py
+```
+
+Il cruscotto mostra le probabilità cronologiche dei quattro cuscinetti del
+`2nd_test`, con replay Play/Pausa, soglia configurabile, Health Index e stati
+di allarme. Le probabilità sono state prodotte dalla rete neurale C++ tramite
+pybind11; l'app usa i file elaborati e non riesegue l'inferenza al cambio di
+acquisizione.
+
+## Dataset secondario: FEMTO/PRONOSTIA
 
 Avvia esplicitamente il download NASA:
 
@@ -55,17 +164,17 @@ percorsi pericolosi negli archivi. Al termine rimuove gli ZIP temporanei; usa
 I dati vengono estratti in `data/raw/femto/`. Dataset scaricati, dati grezzi e
 feature processate sono esclusi da Git.
 
-## Addestramento e valutazione
+## Pipeline FEMTO/PRONOSTIA
 
 ```bash
-python scripts/train_predictive_maintenance.py
+python scripts/train_femto_predictive_maintenance.py
 ```
 
 Per usare i dati sulla cartella condivisa, indica la stessa posizione e salva
 anche le feature elaborate lì:
 
 ```bash
-python scripts/train_predictive_maintenance.py \
+python scripts/train_femto_predictive_maintenance.py \
   --data-dir /mnt/shared/predictive-maintenance/raw/femto \
   --processed-dir /mnt/shared/predictive-maintenance/processed
 ```
@@ -82,7 +191,7 @@ presenti). Di default tiene fuori un intero cuscinetto per il test; per
 sceglierne uno esplicitamente:
 
 ```bash
-python scripts/train_predictive_maintenance.py --test-bearing Bearing1_1
+python scripts/train_femto_predictive_maintenance.py --test-bearing Bearing1_1
 ```
 
 Si possono tenere fuori più cuscinetti ripetendo l'opzione. Il target è
@@ -232,38 +341,42 @@ python scripts/predict_machine.py --signal-csv data/raw/femto/Learning_set/Beari
 ```
 
 Puoi sovrascrivere la soglia usata per l'alert con `--threshold 0.4`.
+L'output riporta i percorsi effettivi del segnale e del modello e il checksum
+SHA-256 del modello, così la previsione è riconducibile all'artefatto usato.
+I nuovi modelli salvano il checksum anche in `models/preprocessing.json`;
+metadati precedenti senza checksum restano utilizzabili, ma viene mostrato un
+avviso perché l'abbinamento tra modello e preprocessing non è verificabile.
+Se il checksum non corrisponde, la previsione viene rifiutata.
 
-## Cruscotto di replay FEMTO
+## Cruscotto industriale StoneCut PdM
 
-Per visualizzare lo stato dei sei cuscinetti del benchmark, l'andamento RMS e
-le notifiche della validazione LOCO:
+Avvia il replay dimostrativo NASA IMS dalla radice del progetto:
 
 ```bash
-streamlit run scripts/dashboard.py
+streamlit run app.py
 ```
 
-Il cruscotto usa `processed/femto_features.npz` e
-`processed/loco_rms_comparison/femto_loco_h20_alarm_predictions.csv` nella
-cartella condivisa `/mnt/shared/predictive-maintenance/`. Se i file si trovano
-altrove, cambia i percorsi nella barra laterale dell'app. La barra laterale
-indica anche il dataset FEMTO/PRONOSTIA, l'accelerazione vibratoria misurata sui
-due assi e l'RMS orizzontale mostrato nel grafico; l'unità non è specificata
-negli artefatti utilizzati.
+Il cruscotto usa `processed/ims_test_features.npz`,
+`processed/ims_test_predictions.csv` e `processed/ims_test_metrics.json` nella
+cartella condivisa `/mnt/shared/predictive-maintenance/`. Il modulo
+`backend.py` carica e mette in cache i dati, mentre `app.py` gestisce la
+visualizzazione. `scripts/dashboard.py` resta disponibile come entry point
+compatibile.
 
-L'interfaccia ha le schede **Quadro d'insieme** e **Dettaglio**. Selezionando
-una scheda cuscinetto nel quadro d'insieme si apre il relativo dettaglio con
-lo stato, lo score e il grafico.
+La barra laterale permette di scegliere Italiano, English o 中文, scorrere i
+984 file del `2nd_test`, avviare o mettere in pausa il replay e regolare la
+soglia di allarme (preselezionata alla soglia scelta nel tuning MLP e salvata
+nei risultati, con precisione al millesimo). La vista principale mostra lo stato della
+macchina, l'indice di salute globale, i quattro componenti della macchina da
+taglio e le probabilità di guasto fino all'acquisizione selezionata. Il
+pannello tecnico confronta Precision/Recall dei due modelli, mostra RMS e
+curtosi e consente di scaricare un report CSV o TXT per i cuscinetti critici.
 
-Il cursore **Posizione nella sequenza storica (%)** confronta i cuscinetti alla
-stessa percentuale della rispettiva sequenza; non rappresenta tempo reale.
-Verde indica score sotto la soglia sperimentale,
-giallo un superamento non ancora confermato, rosso una notifica emessa dalla
-policy LOCO e da sottoporre a verifica del manutentore; lo sfondo dei pulsanti
-nel quadro d'insieme riprende il colore dello stato. Il rosso resta attivo
-nel replay perché non sono disponibili dati di presa in carico o risoluzione.
-È un prototipo dimostrativo basato su sei prove accelerate: non è collegato a
-sensori live, lo score non è calibrato e i colori non sono validati per
-decisioni operative o sostituzioni.
+È un replay storico del benchmark, non un collegamento a sensori live. La
+coda positiva del 25% è un'etichetta proxy e non l'istante osservato del
+guasto; la soglia MLP selezionata sul `2nd_test` e i relativi punteggi non sono
+una misura indipendente né sono calibrati per uso industriale. Il report
+raccomanda una verifica umana e non autorizza una sostituzione automatica.
 
 ## Analisi esplorativa dei dataset pubblici
 
@@ -320,9 +433,12 @@ python -m unittest discover -s tests
 
 ## Fonte e citazione
 
-Dataset: [NASA Prognostics Data Repository — FEMTO Bearing](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/).
-Il repository NASA richiede di citare dataset e donatori e dichiara che l'uso
-dei dati è a rischio dell'utente.
+Dataset principale: [NASA Prognostics Data Repository — IMS Bearings](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/).
+Il dataset è fornito dal Center for Intelligent Maintenance Systems (IMS),
+University of Cincinnati. Il repository NASA richiede di citare dataset e
+donatori e dichiara che l'uso dei dati è a rischio dell'utente.
+
+Dataset secondario: [NASA Prognostics Data Repository — FEMTO Bearing](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/).
 
 Riferimento della piattaforma sperimentale:
 

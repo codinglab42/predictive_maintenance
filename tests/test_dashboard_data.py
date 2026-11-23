@@ -8,7 +8,9 @@ from pathlib import Path
 import numpy as np
 
 from src.dashboard_data import (
+    IMS_ALERT_THRESHOLD,
     load_dashboard_data,
+    load_ims_dashboard_data,
     position_at_progress,
     status_at_position,
 )
@@ -82,6 +84,73 @@ class DashboardDataTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "samples do not match"):
             load_dashboard_data(self.features_path, self.predictions_path)
+
+    def test_ims_dashboard_sorts_timestamps_and_alerts_only_above_point_seven(self) -> None:
+        timestamps = np.asarray(
+            ["2003-10-22 12:10:00", "2003-10-22 12:00:00"],
+            dtype=str,
+        )
+        bearing_ids = np.asarray(["2nd_test_bearing_1"] * 2)
+        labels = np.asarray([1, 0], dtype=np.int64)
+        features = np.asarray([[5.0, 1, 0, 0, 2, 1], [3.0, 1, 0, 0, 2, 1]])
+        np.savez_compressed(
+            self.features_path,
+            features=features,
+            labels=labels,
+            bearing_ids=bearing_ids,
+            timestamps=timestamps,
+        )
+        with self.predictions_path.open("w", newline="", encoding="utf-8") as output:
+            writer = csv.writer(output)
+            writer.writerow(
+                ["bearing_id", "timestamp", "label", "probability", "alert_threshold"]
+            )
+            writer.writerow(
+                ["2nd_test_bearing_1", timestamps[0], 1, 0.7001, IMS_ALERT_THRESHOLD]
+            )
+            writer.writerow(
+                ["2nd_test_bearing_1", timestamps[1], 0, 0.7, IMS_ALERT_THRESHOLD]
+            )
+
+        series = load_ims_dashboard_data(self.features_path, self.predictions_path)[
+            "2nd_test_bearing_1"
+        ]
+
+        np.testing.assert_array_equal(
+            series.timestamps,
+            ["2003-10-22 12:00:00", "2003-10-22 12:10:00"],
+        )
+        np.testing.assert_allclose(series.probabilities, [0.7, 0.7001])
+        np.testing.assert_array_equal(series.above_threshold, [False, True])
+        np.testing.assert_array_equal(series.rms, [3.0, 5.0])
+        np.testing.assert_array_equal(series.kurtosis, [0.0, 0.0])
+
+    def test_ims_dashboard_uses_threshold_stored_with_predictions(self) -> None:
+        timestamps = np.asarray(
+            ["2003-10-22 12:00:00", "2003-10-22 12:10:00"],
+            dtype=str,
+        )
+        np.savez_compressed(
+            self.features_path,
+            features=np.asarray([[3.0, 1, 0, 0, 2, 1], [5.0, 1, 0, 0, 2, 1]]),
+            labels=np.asarray([0, 1], dtype=np.int64),
+            bearing_ids=np.asarray(["2nd_test_bearing_1"] * 2),
+            timestamps=timestamps,
+        )
+        with self.predictions_path.open("w", newline="", encoding="utf-8") as output:
+            writer = csv.writer(output)
+            writer.writerow(
+                ["bearing_id", "timestamp", "label", "probability", "alert_threshold"]
+            )
+            writer.writerow(["2nd_test_bearing_1", timestamps[0], 0, 0.65, 0.65])
+            writer.writerow(["2nd_test_bearing_1", timestamps[1], 1, 0.6501, 0.65])
+
+        series = load_ims_dashboard_data(self.features_path, self.predictions_path)[
+            "2nd_test_bearing_1"
+        ]
+
+        self.assertEqual(series.alert_threshold, 0.65)
+        np.testing.assert_array_equal(series.above_threshold, [False, True])
 
 
 if __name__ == "__main__":

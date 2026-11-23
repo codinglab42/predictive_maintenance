@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from datetime import datetime
+import math
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
 
 from src.femto_data import FEATURE_NAMES, infer_condition_id
+from src.ims_data import FEATURE_NAMES as IMS_FEATURE_NAMES
 
 
 Status = Literal["green", "yellow", "red"]
+IMS_ALERT_THRESHOLD = 0.7
 
 
 @dataclass(frozen=True)
@@ -27,6 +31,18 @@ class BearingSeries:
     notifications: np.ndarray
 
 
+@dataclass(frozen=True)
+class IMSBearingSeries:
+    bearing_id: str
+    timestamps: np.ndarray
+    probabilities: np.ndarray
+    labels: np.ndarray
+    rms: np.ndarray
+    kurtosis: np.ndarray
+    above_threshold: np.ndarray
+    alert_threshold: float
+
+
 _REQUIRED_COLUMNS = {
     "bearing_id",
     "condition_id",
@@ -36,6 +52,7 @@ _REQUIRED_COLUMNS = {
     "balanced_f1_above_threshold",
     "balanced_f1_notification",
 }
+_IMS_REQUIRED_COLUMNS = {"bearing_id", "timestamp", "label", "probability", "alert_threshold"}
 
 
 def load_dashboard_data(features_path: Path, predictions_path: Path) -> dict[str, BearingSeries]:
@@ -141,6 +158,133 @@ def load_dashboard_data(features_path: Path, predictions_path: Path) -> dict[str
     if not bearing_series:
         raise ValueError("no bearing predictions were loaded")
     return bearing_series
+
+
+def load_ims_dashboard_data(
+    features_path: Path,
+    predictions_path: Path,
+) -> dict[str, IMSBearingSeries]:
+    """Join chronological 2nd_test features to neural-network predictions."""
+    with np.load(features_path, allow_pickle=False) as archive:
+        missing_arrays = {"features", "labels", "bearing_ids", "timestamps"} - set(archive.files)
+        if missing_arrays:
+            raise ValueError(f"IMS feature archive is missing arrays: {', '.join(sorted(missing_arrays))}")
+        features = np.asarray(archive["features"], dtype=np.float64)
+        labels = np.asarray(archive["labels"], dtype=np.int64)
+        bearing_ids = np.asarray(archive["bearing_ids"]).astype(str)
+        timestamps = np.asarray(archive["timestamps"]).astype(str)
+
+    if features.ndim != 2 or features.shape[1] != len(IMS_FEATURE_NAMES):
+        raise ValueError("IMS feature archive does not match the six-feature schema")
+    if not np.isfinite(features).all():
+        raise ValueError("IMS feature archive contains non-finite values")
+    if any(array.ndim != 1 for array in (labels, bearing_ids, timestamps)):
+        raise ValueError("IMS labels, bearing IDs, and timestamps must be one-dimensional")
+    if any(array.size != features.shape[0] for array in (labels, bearing_ids, timestamps)):
+        raise ValueError("IMS feature, label, bearing ID, and timestamp counts do not match")
+    if not np.isin(labels, [0, 1]).all():
+        raise ValueError("IMS labels must contain only 0 and 1")
+
+    feature_rows: dict[tuple[str, str], tuple[float, float, int]] = {}
+    for bearing_id, timestamp, label, row in zip(
+        bearing_ids, timestamps, labels, features, strict=True
+    ):
+        try:
+            parsed_timestamp = datetime.fromisoformat(timestamp)
+        except ValueError as error:
+            raise ValueError(f"invalid IMS timestamp for {bearing_id}: {timestamp}") from error
+        key = (bearing_id, parsed_timestamp.isoformat(sep=" "))
+        if key in feature_rows:
+            raise ValueError(f"duplicate IMS feature sample found for {bearing_id} at {timestamp}")
+        feature_rows[key] = (float(row[0]), float(row[2]), int(label))
+
+    predictions: dict[tuple[str, str], float] = {}
+    prediction_threshold: float | None = None
+    try:
+        with predictions_path.open(newline="", encoding="utf-8") as source:
+            reader = csv.DictReader(source)
+            if reader.fieldnames is None:
+                raise ValueError(f"IMS prediction CSV is empty: {predictions_path}")
+            missing_columns = _IMS_REQUIRED_COLUMNS - set(reader.fieldnames)
+            if missing_columns:
+                raise ValueError(
+                    f"IMS prediction CSV is missing columns: {', '.join(sorted(missing_columns))}"
+                )
+            for line_number, row in enumerate(reader, start=2):
+                bearing_id = row["bearing_id"]
+                try:
+                    timestamp = datetime.fromisoformat(row["timestamp"]).isoformat(sep=" ")
+                    label = int(row["label"])
+                    probability = float(row["probability"])
+                    threshold = float(row["alert_threshold"])
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"invalid IMS prediction CSV values on line {line_number}"
+                    ) from error
+                if (
+                    label not in {0, 1}
+                    or not math.isfinite(probability)
+                    or not 0 <= probability <= 1
+                ):
+                    raise ValueError(f"invalid IMS label or probability on CSV line {line_number}")
+                if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+                    raise ValueError(f"invalid IMS alert threshold on CSV line {line_number}")
+                if prediction_threshold is None:
+                    prediction_threshold = threshold
+                elif not math.isclose(
+                    threshold,
+                    prediction_threshold,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                ):
+                    raise ValueError("IMS prediction CSV contains multiple alert thresholds")
+                key = (bearing_id, timestamp)
+                if key in predictions:
+                    raise ValueError(
+                        f"duplicate IMS prediction found for {bearing_id} at {timestamp}"
+                    )
+                if key not in feature_rows or feature_rows[key][2] != label:
+                    raise ValueError(
+                        f"IMS prediction does not match feature label on CSV line {line_number}"
+                    )
+                predictions[key] = probability
+    except OSError as error:
+        raise OSError(f"could not read IMS prediction CSV {predictions_path}: {error}") from error
+
+    if feature_rows.keys() != predictions.keys():
+        missing_predictions = feature_rows.keys() - predictions.keys()
+        missing_features = predictions.keys() - feature_rows.keys()
+        details = []
+        if missing_predictions:
+            details.append(f"{len(missing_predictions)} IMS feature samples lack predictions")
+        if missing_features:
+            details.append(f"{len(missing_features)} IMS predictions lack features")
+        raise ValueError("IMS feature/prediction samples do not match: " + "; ".join(details))
+    if prediction_threshold is None:
+        raise ValueError("IMS prediction CSV contains no alert threshold")
+
+    series_by_bearing: dict[str, IMSBearingSeries] = {}
+    for bearing_id in sorted({key[0] for key in feature_rows}):
+        keys = sorted(
+            (key for key in feature_rows if key[0] == bearing_id),
+            key=lambda key: datetime.fromisoformat(key[1]),
+        )
+        series_by_bearing[bearing_id] = IMSBearingSeries(
+            bearing_id=bearing_id,
+            timestamps=np.asarray([key[1] for key in keys], dtype=str),
+            probabilities=np.asarray([predictions[key] for key in keys], dtype=np.float64),
+            labels=np.asarray([feature_rows[key][2] for key in keys], dtype=np.int64),
+            rms=np.asarray([feature_rows[key][0] for key in keys], dtype=np.float64),
+            kurtosis=np.asarray([feature_rows[key][1] for key in keys], dtype=np.float64),
+            above_threshold=np.asarray(
+                [predictions[key] > prediction_threshold for key in keys],
+                dtype=bool,
+            ),
+            alert_threshold=prediction_threshold,
+        )
+    if not series_by_bearing:
+        raise ValueError("no IMS 2nd_test predictions were loaded")
+    return series_by_bearing
 
 
 def status_at_position(series: BearingSeries, position: int) -> Status:

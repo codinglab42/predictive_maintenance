@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 import re
 from pathlib import Path
 from typing import Callable, Iterable
@@ -141,10 +142,19 @@ def extract_signal_features(signal: np.ndarray) -> np.ndarray:
 
 def read_signal_features(path: Path) -> np.ndarray:
     """Read one headerless, two-channel FEMTO CSV sample and extract features."""
+    return _read_signal_features(path, str(path))
+
+
+def read_signal_features_from_bytes(content: bytes, source_name: str) -> np.ndarray:
+    """Read an uploaded headerless FEMTO CSV sample and extract its features."""
+    return _read_signal_features(BytesIO(content), source_name)
+
+
+def _read_signal_features(source: Path | BytesIO, source_name: str) -> np.ndarray:
     try:
-        signal = np.loadtxt(path, delimiter=",", dtype=np.float64, ndmin=2)
+        signal = np.loadtxt(source, delimiter=",", dtype=np.float64, ndmin=2)
     except (OSError, ValueError) as error:
-        raise ValueError(f"could not read vibration CSV {path}: {error}") from error
+        raise ValueError(f"could not read vibration CSV {source_name}: {error}") from error
     if signal.shape[1] == 6:
         signal = signal[:, -2:]
     return extract_signal_features(signal)

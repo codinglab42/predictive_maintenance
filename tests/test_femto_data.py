@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+from io import BytesIO
 import tempfile
 import unittest
 import zipfile
@@ -15,6 +16,7 @@ from src.femto_data import (
     build_labeled_dataset,
     extract_signal_features,
     read_signal_features,
+    read_signal_features_from_bytes,
 )
 
 
@@ -43,6 +45,21 @@ class FemtoDataTests(unittest.TestCase):
             features = read_signal_features(path)
 
         np.testing.assert_allclose(features, extract_signal_features(signal))
+
+    def test_read_signal_features_from_uploaded_bytes(self) -> None:
+        signal = np.column_stack((np.arange(16), np.arange(16) * 2))
+        uploaded_csv = BytesIO()
+        np.savetxt(uploaded_csv, signal, delimiter=",")
+
+        features = read_signal_features_from_bytes(uploaded_csv.getvalue(), "uploaded.csv")
+
+        np.testing.assert_allclose(features, extract_signal_features(signal))
+
+    def test_uploaded_signal_rejects_invalid_shape(self) -> None:
+        uploaded_csv = b"1,2\n3,4\n5,6\n"
+
+        with self.assertRaisesRegex(ValueError, "at least 8 rows"):
+            read_signal_features_from_bytes(uploaded_csv, "short.csv")
 
     def test_labeled_dataset_counts_records_when_acquisition_ids_have_gaps(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
