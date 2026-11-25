@@ -2,6 +2,10 @@
 
 ## Stato corrente (23 novembre 2026)
 
+Aggiornamento: la demo web ha sostituito il precedente cruscotto Streamlit.
+Per avviarla usare `python web_server.py`; i riferimenti a Streamlit nelle
+sezioni storiche descrivono versioni non più disponibili.
+
 Il dataset principale del progetto è ora NASA IMS Bearing. L'archivio ufficiale
 è stato scaricato in
 `/mnt/shared/predictive-maintenance/downloads/ims_bearings.zip`; il pacchetto
@@ -371,9 +375,10 @@ dashboard non legge sensori live; lo score non è calibrato e i colori non sono
 validati per uso industriale. Rosso indica di valutare un'ispezione umana, non
 una sostituzione automatica.
 
-Avvio: `streamlit run scripts/dashboard.py`. I percorsi di feature e predizioni
-sono configurabili dalla barra laterale. Il caricamento dei dati reali e i test
-del progetto sono stati verificati; 27 test unitari passano.
+All'epoca i percorsi di feature e predizioni erano configurabili dalla barra
+laterale. Il caricamento dei dati reali e i test del progetto erano stati
+verificati; 27 test unitari passavano. Questa dashboard storica non è più
+disponibile.
 
 Attività futura, non ancora avviata: rendere il progetto riproducibile da zero
 su un ambiente pulito. Serviranno istruzioni versionate per repository e

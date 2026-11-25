@@ -11,7 +11,7 @@ import numpy as np
 
 from backend import (
     BearingReading,
-    _load_cached_dashboard_data,
+    _load_dashboard_data,
     build_maintenance_reports,
     classify_probability,
 )
@@ -74,11 +74,10 @@ class DashboardBackendTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            data = _load_cached_dashboard_data.__wrapped__(
-                str(features_path),
-                str(predictions_path),
-                str(metrics_path),
-                ((1, 1), (1, 1), (1, 1)),
+            data = _load_dashboard_data(
+                features_path,
+                predictions_path,
+                metrics_path,
             )
             with predictions_path.open("w", newline="", encoding="utf-8") as output:
                 writer = csv.writer(output)
@@ -94,11 +93,10 @@ class DashboardBackendTests(unittest.TestCase):
                     )
                 )
             with self.assertRaisesRegex(ValueError, "class-like scores"):
-                _load_cached_dashboard_data.__wrapped__(
-                    str(features_path),
-                    str(predictions_path),
-                    str(metrics_path),
-                    ((2, 1), (2, 1), (1, 1)),
+                _load_dashboard_data(
+                    features_path,
+                    predictions_path,
+                    metrics_path,
                 )
 
         self.assertEqual(data.selected_threshold, 0.85)

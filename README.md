@@ -122,17 +122,31 @@ python scripts/train_predictive_maintenance.py \
   --reuse-features
 ```
 
-Avvia il cruscotto collegato alle quattro sequenze del `2nd_test`:
+Avvia la demo web locale collegata alle quattro sequenze del `2nd_test`:
 
 ```bash
-streamlit run app.py
+python web_server.py
 ```
+
+Apri `http://127.0.0.1:8502`. Il server è accessibile solo dalla macchina
+locale, legge una fotografia dei file elaborati all'avvio e serve Plotly
+dal pacchetto installato, senza connessioni a servizi esterni. Replay e filtri
+sono calcolati nel browser; riavvia il server dopo aver rigenerato i dati.
+Il modello C++ non viene eseguito in tempo reale durante il replay.
 
 Il cruscotto mostra le probabilità cronologiche dei quattro cuscinetti del
 `2nd_test`, con replay Play/Pausa, soglia configurabile, Health Index e stati
 di allarme. Le probabilità sono state prodotte dalla rete neurale C++ tramite
 pybind11; l'app usa i file elaborati e non riesegue l'inferenza al cambio di
 acquisizione.
+Per il replay, il cruscotto usa una media mobile causale delle ultime cinque
+acquisizioni (o di quelle disponibili all'inizio); un allarme critico scatta
+solo dopo tre valori consecutivi della media sopra soglia e si azzera quando
+la media torna sotto o alla soglia. Card, Health Index, grafico e report usano
+la stessa serie filtrata. La soglia preselezionata e le metriche comparative
+sopra sono calcolate sui punteggi originali, non sulla nuova regola filtrata:
+non costituiscono una validazione del filtro. Il replay resta una simulazione
+su dati storici e i punteggi non sono calibrati.
 
 ## Dataset secondario: FEMTO/PRONOSTIA
 
@@ -353,15 +367,15 @@ Se il checksum non corrisponde, la previsione viene rifiutata.
 Avvia il replay dimostrativo NASA IMS dalla radice del progetto:
 
 ```bash
-streamlit run app.py
+python web_server.py
 ```
 
 Il cruscotto usa `processed/ims_test_features.npz`,
 `processed/ims_test_predictions.csv` e `processed/ims_test_metrics.json` nella
 cartella condivisa `/mnt/shared/predictive-maintenance/`. Il modulo
-`backend.py` carica e mette in cache i dati, mentre `app.py` gestisce la
-visualizzazione. `scripts/dashboard.py` resta disponibile come entry point
-compatibile.
+`backend.py` carica e verifica i dati all'avvio, mentre l'interfaccia nella
+cartella `web/` gestisce la visualizzazione nel browser.
+`python scripts/dashboard.py` resta disponibile come entry point compatibile.
 
 La barra laterale permette di scegliere Italiano, English o 中文, scorrere i
 984 file del `2nd_test`, avviare o mettere in pausa il replay e regolare la

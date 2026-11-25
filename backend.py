@@ -1,4 +1,4 @@
-"""Cached data access and report generation for the StoneCut PdM dashboard."""
+"""Data access and report generation for the StoneCut PdM dashboard."""
 
 from __future__ import annotations
 
@@ -9,8 +9,6 @@ import json
 import math
 from pathlib import Path
 from typing import Literal
-
-import streamlit as st
 
 from src.dashboard_data import IMSBearingSeries, load_ims_dashboard_data
 
@@ -51,25 +49,21 @@ class BearingReading:
 
 
 def load_dashboard_data() -> DashboardData:
-    paths = (DEFAULT_FEATURES_PATH, DEFAULT_PREDICTIONS_PATH, DEFAULT_METRICS_PATH)
-    signatures = tuple(
-        (path.stat().st_mtime_ns, path.stat().st_size)
-        for path in paths
+    return _load_dashboard_data(
+        DEFAULT_FEATURES_PATH,
+        DEFAULT_PREDICTIONS_PATH,
+        DEFAULT_METRICS_PATH,
     )
-    return _load_cached_dashboard_data(*(str(path) for path in paths), signatures)
 
 
-@st.cache_data(show_spinner="Loading IMS test sequences and model metrics...")
-def _load_cached_dashboard_data(
-    features_path: str,
-    predictions_path: str,
-    metrics_path: str,
-    file_signatures: tuple[tuple[int, int], ...],
+def _load_dashboard_data(
+    features_path: Path,
+    predictions_path: Path,
+    metrics_path: Path,
 ) -> DashboardData:
-    del file_signatures
     series_by_bearing = load_ims_dashboard_data(
-        Path(features_path),
-        Path(predictions_path),
+        features_path,
+        predictions_path,
     )
     probability_values = {
         float(probability)
@@ -94,7 +88,6 @@ def _load_cached_dashboard_data(
         if not (series_by_bearing[bearing_id].timestamps == reference_timestamps).all():
             raise ValueError("IMS bearing timestamps are not aligned across acquisition files.")
 
-    metrics_path = Path(metrics_path)
     try:
         metrics_document = json.loads(metrics_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:

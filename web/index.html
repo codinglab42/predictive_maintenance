@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StoneCut PdM - Neural Monitoring</title>
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/plotly.min.js"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">STONECUT <span>PdM</span></div>
+    <p class="eyebrow">INDUSTRIAL CONDITION MONITORING</p>
+    <label for="language" data-text="language">Lingua</label>
+    <select id="language"><option value="it">Italiano</option><option value="en">English</option><option value="zh">中文</option></select>
+    <h2 data-text="replay">Replay storico NASA IMS</h2>
+    <label for="threshold"><span data-text="threshold">Soglia di allarme</span> <output id="threshold-value"></output></label>
+    <input id="threshold" type="range" min="0.5" max="0.999" step="0.001">
+    <button id="play" type="button" disabled>▶ Play</button>
+    <label for="position"><span data-text="acquisition">Acquisizione</span> <output id="position-value"></output></label>
+    <input id="position" type="range" min="1" value="1" step="1" disabled>
+    <p id="timestamp" class="muted"></p>
+    <p class="muted" data-text="source">Modello C++ · punteggi precalcolati sul dataset IMS</p>
+  </aside>
+  <main>
+    <p class="eyebrow">INDUSTRIAL CONDITION MONITORING · NASA IMS</p>
+    <h1>StoneCut PdM</h1>
+    <p class="subtitle" data-text="subtitle">Monitoraggio predittivo per macchine da taglio della pietra</p>
+    <div class="banner" data-text="banner">Simulazione su dati storici IMS. Punteggi non calibrati; ogni segnalazione richiede verifica umana.</div>
+    <div id="error" class="error" role="alert" hidden></div>
+    <section aria-labelledby="machine-title">
+      <h2 id="machine-title" data-text="machine">Macchina</h2>
+      <div class="kpis">
+        <div class="kpi"><span data-text="machineStatus">Stato macchina</span><strong id="machine-status">—</strong><small id="machine-score"></small></div>
+        <div class="kpi"><span data-text="globalHealth">Health Index globale</span><strong id="global-health">—</strong></div>
+        <div class="kpi"><span data-text="bearings">Cuscinetti monitorati</span><strong id="bearing-count">—</strong><small id="critical-count"></small></div>
+        <div class="kpi"><span data-text="engine">Motore predittivo</span><strong>C++ / IMS</strong><small data-text="engineNote">Punteggi precalcolati</small></div>
+      </div>
+    </section>
+    <section aria-labelledby="bearing-title">
+      <h2 id="bearing-title" data-text="bearingStatus">Stato cuscinetti macchina</h2>
+      <div id="cards" class="cards"></div>
+      <p id="alarm" role="status" class="alarm" hidden></p>
+    </section>
+    <section aria-labelledby="chart-title">
+      <h2 id="chart-title" data-text="chartTitle">Andamento storico della probabilità di guasto</h2>
+      <div id="chart" class="chart"></div>
+      <p class="muted" data-text="filterNote">Media mobile sulle ultime 5 acquisizioni (meno all'inizio); allarme dopo 3 valori consecutivi sopra soglia.</p>
+    </section>
+    <details id="diagnostics">
+      <summary data-text="advanced">Diagnostica Avanzata &amp; Confronto Modelli (Ingegneria)</summary>
+      <p class="warning" data-text="methodology">Soglia selezionata sul 2nd_test: analisi esplorativa, non test indipendente. Punteggi Sigmoide non calibrati. La coda positiva è un'etichetta proxy, non il momento osservato del guasto.</p>
+      <p class="muted" data-text="metricsNote">Le metriche confrontano i punteggi originali, non la regola filtrata del cruscotto.</p>
+      <div id="diagnostic-chart" class="chart"></div>
+      <div id="comparison" class="chart small"></div>
+      <div class="trends"><div id="rms-chart" class="chart small"></div><div id="kurtosis-chart" class="chart small"></div></div>
+      <h3 data-text="report">Report di manutenzione</h3>
+      <p id="report-status" class="muted"></p>
+      <div class="report-buttons"><button id="csv" type="button" disabled data-text="downloadCsv">Scarica report CSV</button><button id="txt" type="button" disabled data-text="downloadTxt">Scarica report TXT</button></div>
+    </details>
+  </main>
+</body>
+</html>

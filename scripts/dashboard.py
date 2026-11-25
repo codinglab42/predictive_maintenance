@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility entry point for the StoneCut IMS Streamlit dashboard."""
+"""Compatibility entry point for the StoneCut IMS web dashboard."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app import main
+from web_server import main
 
 
 if __name__ == "__main__":
