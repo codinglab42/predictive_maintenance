@@ -152,6 +152,60 @@ class DashboardDataTests(unittest.TestCase):
         self.assertEqual(series.alert_threshold, 0.65)
         np.testing.assert_array_equal(series.above_threshold, [False, True])
 
+    def test_ims_dashboard_aligns_three_model_scores_to_file_fifteen_onward(self) -> None:
+        timestamps = np.asarray(
+            [f"2003-10-22 12:{index:02d}:00" for index in range(20)],
+            dtype=str,
+        )
+        np.savez_compressed(
+            self.features_path,
+            features=np.zeros((20, 6)),
+            labels=np.zeros(20, dtype=np.int64),
+            bearing_ids=np.asarray(["2nd_test_bearing_1"] * 20),
+            timestamps=timestamps,
+        )
+        model_probabilities = {
+            "logistic_regression": 0.61,
+            "neural_network_cpp": 0.72,
+            "gru_cpp": 0.83,
+        }
+        with self.predictions_path.open("w", newline="", encoding="utf-8") as output:
+            writer = csv.writer(output)
+            writer.writerow(
+                [
+                    "bearing_id", "timestamp", "file_index", "label",
+                    "model_id", "probability", "alert_threshold",
+                ]
+            )
+            for file_index in range(15, 21):
+                timestamp = timestamps[file_index - 1]
+                for model_id, probability in model_probabilities.items():
+                    writer.writerow(
+                        [
+                            "2nd_test_bearing_1",
+                            timestamp,
+                            file_index,
+                            0,
+                            model_id,
+                            probability,
+                            0.7,
+                        ]
+                    )
+
+        series = load_ims_dashboard_data(
+            self.features_path,
+            self.predictions_path,
+            active_model="gru_cpp",
+        )["2nd_test_bearing_1"]
+
+        np.testing.assert_array_equal(series.file_indices, np.arange(15, 21))
+        np.testing.assert_allclose(series.probabilities, [0.83] * 6)
+        np.testing.assert_allclose(
+            series.probabilities_by_model["logistic_regression"],
+            [0.61] * 6,
+        )
+        self.assertEqual(series.alert_threshold, 0.7)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,7 @@ DEFAULT_PROCESSED_DIR = SHARED_ROOT / "processed"
 MODEL_DIR = ROOT / "models"
 NEURAL_MODEL_PATH = MODEL_DIR / "ims_neural_network.bin"
 LOGISTIC_MODEL_PATH = MODEL_DIR / "ims_logistic_regression.bin"
+GRU_MODEL_PATH = MODEL_DIR / "ims_gru.bin"
 METADATA_PATH = MODEL_DIR / "ims_preprocessing.json"
 ALERT_THRESHOLD = 0.7
 THRESHOLD_CANDIDATES = (
@@ -49,6 +50,16 @@ NEURAL_NETWORK_HIDDEN_UNITS = 12
 NEURAL_NETWORK_EPOCHS = 60
 NEURAL_NETWORK_LEARNING_RATE = 0.001
 NEURAL_NETWORK_L2_STRENGTH = 0.01
+GRU_UNITS = 12
+SEQUENCE_LENGTH = 15
+ALARM_ROLLING_WINDOW = 5
+ALARM_PERSISTENCE = 3
+MODEL_ORDER = ("logistic_regression", "neural_network_cpp", "gru_cpp")
+MODEL_DISPLAY_NAMES = {
+    "logistic_regression": "Logistic regression C++",
+    "neural_network_cpp": "MLP C++",
+    "gru_cpp": "GRU C++",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -185,38 +196,170 @@ def _metrics(
     return precision, recall, f1
 
 
+def _build_sliding_windows(
+    features: np.ndarray,
+    labels: np.ndarray,
+    bearing_ids: np.ndarray,
+    timestamps: np.ndarray,
+    time_steps: int = SEQUENCE_LENGTH,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if (
+        features.ndim != 2
+        or labels.ndim != 1
+        or bearing_ids.ndim != 1
+        or timestamps.ndim != 1
+        or any(array.size != features.shape[0] for array in (labels, bearing_ids, timestamps))
+        or features.shape[0] == 0
+    ):
+        raise ValueError("sliding windows require aligned, non-empty feature and metadata arrays")
+    if time_steps < 1:
+        raise ValueError("time_steps must be positive")
+    if not np.isfinite(features).all() or not np.isin(labels, [0, 1]).all():
+        raise ValueError("sliding windows require finite features and binary labels")
+
+    windows: list[np.ndarray] = []
+    window_labels: list[int] = []
+    window_bearings: list[str] = []
+    window_timestamps: list[str] = []
+    window_file_indices: list[int] = []
+    for bearing_id in np.unique(bearing_ids):
+        positions = np.flatnonzero(bearing_ids == bearing_id)
+        chronological = positions[np.argsort(timestamps[positions], kind="stable")]
+        bearing_timestamps = timestamps[chronological]
+        if np.unique(bearing_timestamps).size != chronological.size:
+            raise ValueError(f"{bearing_id} contains duplicate IMS timestamps")
+        if chronological.size < time_steps:
+            raise ValueError(
+                f"{bearing_id} has fewer than {time_steps} samples for a sliding window"
+            )
+        for end in range(time_steps - 1, chronological.size):
+            final_position = chronological[end]
+            windows.append(features[chronological[end - time_steps + 1 : end + 1]])
+            window_labels.append(int(labels[final_position]))
+            window_bearings.append(str(bearing_id))
+            window_timestamps.append(str(timestamps[final_position]))
+            window_file_indices.append(end + 1)
+
+    return (
+        np.asarray(windows, dtype=np.float64),
+        np.asarray(window_labels, dtype=np.int64),
+        np.asarray(window_bearings, dtype=str),
+        np.asarray(window_timestamps, dtype=str),
+        np.asarray(window_file_indices, dtype=np.int64),
+    )
+
+
+def _rolling_mean_by_bearing(
+    probabilities: np.ndarray,
+    bearing_ids: np.ndarray,
+    timestamps: np.ndarray,
+    window: int = ALARM_ROLLING_WINDOW,
+) -> np.ndarray:
+    if (
+        probabilities.ndim != 1
+        or bearing_ids.ndim != 1
+        or timestamps.ndim != 1
+        or probabilities.size != bearing_ids.size
+        or probabilities.size != timestamps.size
+        or probabilities.size == 0
+    ):
+        raise ValueError("rolling mean requires aligned, non-empty probability and metadata arrays")
+    if window < 1 or not np.isfinite(probabilities).all():
+        raise ValueError("rolling mean requires a positive window and finite probabilities")
+
+    smoothed = np.empty_like(probabilities, dtype=np.float64)
+    for bearing_id in np.unique(bearing_ids):
+        positions = np.flatnonzero(bearing_ids == bearing_id)
+        chronological = positions[np.argsort(timestamps[positions], kind="stable")]
+        if np.unique(timestamps[chronological]).size != chronological.size:
+            raise ValueError(f"{bearing_id} contains duplicate IMS timestamps")
+        values = probabilities[chronological]
+        cumulative = np.concatenate(([0.0], np.cumsum(values)))
+        for index, position in enumerate(chronological):
+            start = max(0, index - window + 1)
+            smoothed[position] = (cumulative[index + 1] - cumulative[start]) / (index + 1 - start)
+    return smoothed
+
+
+def _confirmed_alarms(
+    smoothed_probabilities: np.ndarray,
+    bearing_ids: np.ndarray,
+    timestamps: np.ndarray,
+    threshold: float,
+    persistence: int = ALARM_PERSISTENCE,
+) -> np.ndarray:
+    if (
+        smoothed_probabilities.ndim != 1
+        or bearing_ids.ndim != 1
+        or timestamps.ndim != 1
+        or smoothed_probabilities.size != bearing_ids.size
+        or smoothed_probabilities.size != timestamps.size
+    ):
+        raise ValueError("alarm confirmation requires aligned one-dimensional arrays")
+    if not 0.0 <= threshold <= 1.0 or persistence < 1:
+        raise ValueError("threshold must be in [0, 1] and persistence must be positive")
+
+    alarms = np.zeros(smoothed_probabilities.size, dtype=bool)
+    for bearing_id in np.unique(bearing_ids):
+        positions = np.flatnonzero(bearing_ids == bearing_id)
+        chronological = positions[np.argsort(timestamps[positions], kind="stable")]
+        count = 0
+        for position in chronological:
+            count = count + 1 if smoothed_probabilities[position] > threshold else 0
+            alarms[position] = count >= persistence
+    return alarms
+
+
+def _alarm_episodes(
+    alarms: np.ndarray,
+    bearing_ids: np.ndarray,
+    timestamps: np.ndarray,
+) -> dict[str, int]:
+    episodes: dict[str, int] = {}
+    for bearing_id in np.unique(bearing_ids):
+        positions = np.flatnonzero(bearing_ids == bearing_id)
+        chronological = positions[np.argsort(timestamps[positions], kind="stable")]
+        values = alarms[chronological]
+        episodes[str(bearing_id)] = int(
+            np.count_nonzero(values & ~np.concatenate(([False], values[:-1])))
+        )
+    return episodes
+
+
 def _threshold_diagnostics(
     labels: np.ndarray,
     probabilities: np.ndarray,
     bearing_ids: np.ndarray,
+    timestamps: np.ndarray,
+    file_indices: np.ndarray,
+    rolling_window: int = ALARM_ROLLING_WINDOW,
+    persistence: int = ALARM_PERSISTENCE,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     if (
         labels.ndim != 1
         or probabilities.ndim != 1
         or bearing_ids.ndim != 1
+        or timestamps.ndim != 1
+        or file_indices.ndim != 1
         or labels.size != probabilities.size
         or labels.size != bearing_ids.size
+        or labels.size != timestamps.size
+        or labels.size != file_indices.size
     ):
         raise ValueError("threshold diagnostics require aligned one-dimensional arrays")
 
-    bearing_names = tuple(f"Bearing {index}" for index in range(1, 5))
-    bearing_ids_by_name = {
-        f"Bearing {index}": f"2nd_test_bearing_{index}" for index in range(1, 5)
-    }
+    smoothed = _rolling_mean_by_bearing(probabilities, bearing_ids, timestamps, rolling_window)
     results: list[dict[str, object]] = []
     for threshold in THRESHOLD_CANDIDATES:
-        predictions = probabilities > threshold
-        precision, recall, f1 = _metrics(labels, probabilities, threshold)
-        alarms_by_bearing = {
-            bearing_name: int(
-                np.count_nonzero(
-                    predictions & (bearing_ids == bearing_ids_by_name[bearing_name])
-                )
-            )
-            for bearing_name in bearing_names
-        }
-        healthy_alarm_samples = sum(
-            alarms_by_bearing[f"Bearing {index}"] for index in (2, 3, 4)
+        alarms = _confirmed_alarms(smoothed, bearing_ids, timestamps, threshold, persistence)
+        precision, recall, f1 = _metrics(labels, alarms.astype(np.float64), 0.5)
+        episodes_by_bearing = _alarm_episodes(alarms, bearing_ids, timestamps)
+        healthy_false_alarms = sum(
+            episodes_by_bearing.get(f"2nd_test_bearing_{index}", 0)
+            for index in (2, 3, 4)
+        )
+        bearing_1 = np.flatnonzero(
+            (bearing_ids == "2nd_test_bearing_1") & alarms
         )
         results.append(
             {
@@ -224,8 +367,11 @@ def _threshold_diagnostics(
                 "precision": precision,
                 "recall": recall,
                 "f1_score": f1,
-                "alarm_samples_by_bearing": alarms_by_bearing,
-                "healthy_bearing_alarm_samples": healthy_alarm_samples,
+                "first_alarm_bearing_1_file": (
+                    int(file_indices[bearing_1[0]]) if bearing_1.size else None
+                ),
+                "false_alarm_episodes_by_bearing": episodes_by_bearing,
+                "healthy_false_alarm_episodes": healthy_false_alarms,
             }
         )
 
@@ -233,26 +379,11 @@ def _threshold_diagnostics(
         results,
         key=lambda result: (
             float(result["f1_score"]),
-            -int(result["healthy_bearing_alarm_samples"]),
+            -int(result["healthy_false_alarm_episodes"]),
             float(result["threshold"]),
         ),
     )
     return results, selected
-
-
-def _print_bearing_alarm_counts(
-    bearing_ids: np.ndarray,
-    probabilities: np.ndarray,
-    threshold: float,
-    label: str,
-) -> None:
-    predictions = probabilities > threshold
-    print(f"MLP alarm samples per bearing at threshold {threshold:.3f} ({label}):")
-    for index in range(1, 5):
-        bearing_id = f"2nd_test_bearing_{index}"
-        count = int(np.count_nonzero(predictions & (bearing_ids == bearing_id)))
-        samples = int(np.count_nonzero(bearing_ids == bearing_id))
-        print(f"  Bearing {index}: {count:,} / {samples:,}")
 
 
 def _validate_probabilities(output: object, expected_rows: int, model_name: str) -> np.ndarray:
@@ -274,25 +405,50 @@ def _save_predictions(
     path: Path,
     bearing_ids: np.ndarray,
     timestamps: np.ndarray,
+    file_indices: np.ndarray,
     labels: np.ndarray,
-    probabilities: np.ndarray,
-    alert_threshold: float,
+    probabilities_by_model: dict[str, np.ndarray],
+    thresholds_by_model: dict[str, float],
 ) -> None:
+    expected_shape = labels.shape
+    if any(
+        values.shape != expected_shape
+        for values in (bearing_ids, timestamps, file_indices)
+    ):
+        raise ValueError("prediction metadata arrays must match the label count")
+    if set(probabilities_by_model) != set(MODEL_ORDER) or set(thresholds_by_model) != set(MODEL_ORDER):
+        raise ValueError("predictions and thresholds must be provided for all three models")
+    if any(values.shape != expected_shape for values in probabilities_by_model.values()):
+        raise ValueError("each model must provide one probability per aligned test window")
+
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
     with temporary_path.open("w", newline="", encoding="utf-8") as output:
         writer = csv.writer(output)
-        writer.writerow(["bearing_id", "timestamp", "label", "probability", "alert_threshold"])
-        writer.writerows(
-            zip(
-                bearing_ids.tolist(),
-                timestamps.tolist(),
-                labels.tolist(),
-                probabilities.tolist(),
-                [alert_threshold] * labels.size,
-                strict=True,
-            )
+        writer.writerow(
+            [
+                "bearing_id",
+                "timestamp",
+                "file_index",
+                "label",
+                "model_id",
+                "probability",
+                "alert_threshold",
+            ]
         )
+        for model_id in MODEL_ORDER:
+            writer.writerows(
+                zip(
+                    bearing_ids.tolist(),
+                    timestamps.tolist(),
+                    file_indices.tolist(),
+                    labels.tolist(),
+                    [model_id] * labels.size,
+                    probabilities_by_model[model_id].tolist(),
+                    [thresholds_by_model[model_id]] * labels.size,
+                    strict=True,
+                )
+            )
     os.replace(temporary_path, path)
 
 
@@ -377,13 +533,48 @@ def main() -> None:
         raise ValueError("ml_core.StandardScaler returned invalid parameters")
     if not np.isfinite(scaled_train).all() or not np.isfinite(scaled_test).all():
         raise ValueError("ml_core.StandardScaler produced non-finite features")
+    (
+        train_windows,
+        train_window_labels,
+        _,
+        _,
+        _,
+    ) = _build_sliding_windows(
+        scaled_train,
+        train_labels,
+        train_bearings,
+        train_timestamps,
+    )
+    (
+        test_windows,
+        aligned_test_labels,
+        aligned_test_bearings,
+        aligned_test_timestamps,
+        aligned_test_file_indices,
+    ) = _build_sliding_windows(
+        scaled_test,
+        test_labels,
+        test_bearings,
+        test_timestamps,
+    )
+    scaled_train_windows = np.asfortranarray(train_windows)
+    scaled_test_windows = np.asfortranarray(test_windows)
+    aligned_test_features = np.asfortranarray(scaled_test_windows[:, -1, :])
     print(
-        f"Training samples: {train_labels.size:,} | 2nd_test samples: {test_labels.size:,}",
+        f"Training samples: {train_labels.size:,} | "
+        f"GRU training windows: {train_window_labels.size:,} | "
+        f"Aligned 2nd_test windows: {aligned_test_labels.size:,} "
+        f"(files {SEQUENCE_LENGTH}-{test_features.shape[0] // 4})",
         file=sys.stderr,
         flush=True,
     )
 
-    neural_model = ml.NeuralNetwork(
+    logistic_model = ml.LogisticRegression(0.05, 1500, 0.01, 1e-4, True)
+    logistic_training_started = time.perf_counter()
+    logistic_model.fit(scaled_train, train_labels.astype(np.float64))
+    logistic_training_seconds = time.perf_counter() - logistic_training_started
+
+    mlp_model = ml.NeuralNetwork(
         [len(FEATURE_NAMES), NEURAL_NETWORK_HIDDEN_UNITS, 1],
         "relu",
         "sigmoid",
@@ -393,58 +584,119 @@ def main() -> None:
         NEURAL_NETWORK_L2_STRENGTH,
         seed=NEURAL_NETWORK_SEED,
     )
-    neural_model.set_loss_function("binary_crossentropy")
-    neural_model.set_epochs(NEURAL_NETWORK_EPOCHS)
-    neural_model.set_batch_size(32)
-    neural_model.set_verbose(False)
-    neural_training_started = time.perf_counter()
-    neural_model.fit(scaled_train, train_labels.astype(np.float64))
-    neural_training_seconds = time.perf_counter() - neural_training_started
+    mlp_model.set_loss_function("binary_crossentropy")
+    mlp_model.set_epochs(NEURAL_NETWORK_EPOCHS)
+    mlp_model.set_batch_size(32)
+    mlp_model.set_verbose(False)
+    mlp_training_started = time.perf_counter()
+    mlp_model.fit(scaled_train, train_labels.astype(np.float64))
+    mlp_training_seconds = time.perf_counter() - mlp_training_started
 
-    logistic_model = ml.LogisticRegression(0.05, 1500, 0.01, 1e-4, True)
-    logistic_training_started = time.perf_counter()
-    logistic_model.fit(scaled_train, train_labels.astype(np.float64))
-    logistic_training_seconds = time.perf_counter() - logistic_training_started
+    gru_model = ml.NeuralNetwork(
+        [len(FEATURE_NAMES), 1],
+        "relu",
+        "sigmoid",
+        ml.OptimizerType.ADAM,
+        NEURAL_NETWORK_LEARNING_RATE,
+        ml.RegularizerType.NONE,
+        NEURAL_NETWORK_L2_STRENGTH,
+        NEURAL_NETWORK_SEED,
+    )
+    gru_model.reset()
+    gru_model.add_recurrent_layer(
+        ml.RecurrentType.GRU,
+        GRU_UNITS,
+        return_sequences=False,
+        activation="tanh",
+    )
+    gru_model.add_dense_layer(1, "sigmoid")
+    gru_model.set_optimizer(ml.OptimizerType.ADAM, NEURAL_NETWORK_LEARNING_RATE)
+    gru_model.set_loss_function("binary_crossentropy")
+    gru_model.set_epochs(NEURAL_NETWORK_EPOCHS)
+    gru_model.set_batch_size(32)
+    gru_model.set_verbose(False)
+    gru_training_started = time.perf_counter()
+    gru_model.fit(scaled_train_windows, train_window_labels.astype(np.float64))
+    gru_training_seconds = time.perf_counter() - gru_training_started
 
-    neural_verification_started = time.perf_counter()
-    neural_probabilities = _validate_probabilities(
-        neural_model.predict_proba(scaled_test),
-        test_labels.size,
-        "IMS neural network",
-    )
-    threshold_results, selected_threshold_result = _threshold_diagnostics(
-        test_labels,
-        neural_probabilities,
-        test_bearings,
-    )
-    selected_threshold = float(selected_threshold_result["threshold"])
-    neural_metrics = _metrics(test_labels, neural_probabilities, selected_threshold)
-    neural_verification_seconds = time.perf_counter() - neural_verification_started
+    model_objects = {
+        "logistic_regression": logistic_model,
+        "neural_network_cpp": mlp_model,
+        "gru_cpp": gru_model,
+    }
+    test_inputs = {
+        "logistic_regression": aligned_test_features,
+        "neural_network_cpp": aligned_test_features,
+        "gru_cpp": scaled_test_windows,
+    }
+    training_seconds = {
+        "logistic_regression": logistic_training_seconds,
+        "neural_network_cpp": mlp_training_seconds,
+        "gru_cpp": gru_training_seconds,
+    }
+    probabilities_by_model: dict[str, np.ndarray] = {}
+    inference_seconds: dict[str, float] = {}
+    threshold_results_by_model: dict[str, list[dict[str, object]]] = {}
+    model_metrics: dict[str, dict[str, object]] = {}
+    thresholds_by_model: dict[str, float] = {}
+    for model_id in MODEL_ORDER:
+        inference_started = time.perf_counter()
+        predictions = model_objects[model_id].predict_proba(test_inputs[model_id])
+        inference_seconds[model_id] = time.perf_counter() - inference_started
+        probabilities = _validate_probabilities(
+            predictions,
+            aligned_test_labels.size,
+            MODEL_DISPLAY_NAMES[model_id],
+        )
+        probabilities_by_model[model_id] = probabilities
+        threshold_results, selected = _threshold_diagnostics(
+            aligned_test_labels,
+            probabilities,
+            aligned_test_bearings,
+            aligned_test_timestamps,
+            aligned_test_file_indices,
+        )
+        threshold_results_by_model[model_id] = threshold_results
+        thresholds_by_model[model_id] = float(selected["threshold"])
+        model_metrics[model_id] = {
+            "display_name": MODEL_DISPLAY_NAMES[model_id],
+            "seed": NEURAL_NETWORK_SEED,
+            "precision": float(selected["precision"]),
+            "recall": float(selected["recall"]),
+            "f1_score": float(selected["f1_score"]),
+            "threshold": float(selected["threshold"]),
+            "training_seconds": training_seconds[model_id],
+            "inference_seconds": inference_seconds[model_id],
+            "first_alarm_bearing_1_file": selected["first_alarm_bearing_1_file"],
+            "false_alarm_episodes_by_bearing": selected[
+                "false_alarm_episodes_by_bearing"
+            ],
+            "healthy_false_alarm_episodes": int(
+                selected["healthy_false_alarm_episodes"]
+            ),
+        }
 
-    logistic_verification_started = time.perf_counter()
-    logistic_probabilities = _validate_probabilities(
-        logistic_model.predict(scaled_test),
-        test_labels.size,
-        "IMS logistic-regression benchmark",
-    )
-    logistic_metrics = _metrics(test_labels, logistic_probabilities)
-    logistic_verification_seconds = time.perf_counter() - logistic_verification_started
-    timings = {
-        "neural_training_seconds": neural_training_seconds,
-        "logistic_training_seconds": logistic_training_seconds,
-        "neural_verification_seconds": neural_verification_seconds,
-        "logistic_verification_seconds": logistic_verification_seconds,
-        "total_fit_and_verification_seconds": (
-            neural_training_seconds
-            + logistic_training_seconds
-            + neural_verification_seconds
-            + logistic_verification_seconds
+    active_model = max(
+        MODEL_ORDER,
+        key=lambda model_id: (
+            float(model_metrics[model_id]["f1_score"]),
+            -int(model_metrics[model_id]["healthy_false_alarm_episodes"]),
+            -float(model_metrics[model_id]["inference_seconds"]),
         ),
+    )
+    selected_threshold = thresholds_by_model[active_model]
+    timings = {
+        model_id: {
+            "training_seconds": training_seconds[model_id],
+            "inference_seconds": inference_seconds[model_id],
+        }
+        for model_id in MODEL_ORDER
     }
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    neural_model.save(str(NEURAL_MODEL_PATH))
+    mlp_model.save(str(NEURAL_MODEL_PATH))
     logistic_model.save(str(LOGISTIC_MODEL_PATH))
+    gru_model.save(str(GRU_MODEL_PATH))
     _save_dataset(
         processed_dir / "ims_train_features.npz",
         train_features,
@@ -462,57 +714,13 @@ def main() -> None:
     predictions_path = processed_dir / "ims_test_predictions.csv"
     _save_predictions(
         predictions_path,
-        test_bearings,
-        test_timestamps,
-        test_labels,
-        neural_probabilities,
-        selected_threshold,
+        aligned_test_bearings,
+        aligned_test_timestamps,
+        aligned_test_file_indices,
+        aligned_test_labels,
+        probabilities_by_model,
+        thresholds_by_model,
     )
-
-    _print_bearing_alarm_counts(
-        test_bearings,
-        neural_probabilities,
-        ALERT_THRESHOLD,
-        "baseline",
-    )
-    _print_bearing_alarm_counts(
-        test_bearings,
-        neural_probabilities,
-        selected_threshold,
-        "selected",
-    )
-    print("MLP threshold sweep on 2nd_test (exploratory):")
-    for result in threshold_results:
-        counts = result["alarm_samples_by_bearing"]
-        print(
-            f"  threshold={result['threshold']:.3f} "
-            f"Precision={result['precision']:.4f} "
-            f"Recall={result['recall']:.4f} "
-            f"F1={result['f1_score']:.4f} "
-            f"healthy_bearing_alarms={result['healthy_bearing_alarm_samples']} "
-            f"per_bearing={counts}"
-        )
-    print(
-        "Selected threshold (max F1, then fewest alarms on healthy bearings): "
-        f"{selected_threshold:.3f}"
-    )
-    print(
-        "MLP sigmoid scores: "
-        f"min={neural_probabilities.min():.6f} "
-        f"max={neural_probabilities.max():.6f} "
-        f"unique={np.unique(neural_probabilities).size:,}"
-    )
-
-    model_metrics = {
-        "neural_network_cpp": {
-            **dict(zip(("precision", "recall", "f1_score"), neural_metrics, strict=True)),
-            "threshold": selected_threshold,
-        },
-        "logistic_regression": {
-            **dict(zip(("precision", "recall", "f1_score"), logistic_metrics, strict=True)),
-            "threshold": ALERT_THRESHOLD,
-        },
-    }
 
     metrics_path = processed_dir / "ims_test_metrics.json"
     metrics_temporary_path = metrics_path.with_suffix(".json.tmp")
@@ -522,17 +730,24 @@ def main() -> None:
                 "source": "NASA IMS Bearing Dataset",
                 "training_series": ["1st_test", "3rd_test"],
                 "test_series": "2nd_test",
-                "threshold_rule": "probability > selected threshold",
+                "threshold_rule": (
+                    "causal rolling mean over five probabilities, followed by "
+                    "three consecutive values strictly above the model threshold"
+                ),
+                "metric_policy": "metrics use confirmed alarms after rolling mean and persistence",
                 "threshold": selected_threshold,
-                "baseline_threshold": ALERT_THRESHOLD,
+                "active_model": active_model,
+                "thresholds_by_model": thresholds_by_model,
                 "threshold_tuning": {
                     "selection_data": "2nd_test labels; exploratory, not an independent test result",
                     "objective": (
-                        "maximize sample-wise F1; break ties by fewer alarms on "
-                        "healthy bearings 2, 3, and 4, then higher threshold"
+                        "maximize F1 of confirmed alarms; break ties by fewer false-alarm "
+                        "episodes on healthy bearings 2, 3, and 4, then higher threshold"
                     ),
-                    "candidates": threshold_results,
-                    "selected_threshold": selected_threshold,
+                    "rolling_window": ALARM_ROLLING_WINDOW,
+                    "persistence": ALARM_PERSISTENCE,
+                    "candidates_by_model": threshold_results_by_model,
+                    "selected_thresholds_by_model": thresholds_by_model,
                 },
                 "neural_network_seed": NEURAL_NETWORK_SEED,
                 "neural_network": {
@@ -548,16 +763,31 @@ def main() -> None:
                     "regularizer": "L2",
                     "regularizer_strength": NEURAL_NETWORK_L2_STRENGTH,
                 },
+                "gru_network": {
+                    "input_features": len(FEATURE_NAMES),
+                    "time_steps": SEQUENCE_LENGTH,
+                    "gru_units": GRU_UNITS,
+                    "return_sequences": False,
+                    "dense_units": 1,
+                    "dense_activation": "sigmoid",
+                    "recurrent_activation": "tanh",
+                    "learning_rate": NEURAL_NETWORK_LEARNING_RATE,
+                    "epochs": NEURAL_NETWORK_EPOCHS,
+                    "batch_size": 32,
+                    "seed": NEURAL_NETWORK_SEED,
+                },
                 "baseline_normalization": {
                     "method": "feature minus mean of first chronological samples per bearing",
                     "sample_count": BASELINE_SAMPLE_COUNT,
                 },
                 "training_samples": int(train_labels.size),
-                "test_samples": int(test_labels.size),
-                "positive_test_samples": int(test_labels.sum()),
+                "training_sequence_windows": int(train_window_labels.size),
+                "test_samples": int(aligned_test_labels.size),
+                "full_test_samples": int(test_labels.size),
+                "positive_test_samples": int(aligned_test_labels.sum()),
                 "timing_scope": (
-                    "wall-clock model fit and test prediction plus metric calculation; "
-                    "excludes feature extraction, scaling, and artifact writes"
+                    "wall-clock model fit and predict_proba only; excludes feature extraction, "
+                    "scaling, rolling/persistence metrics, and artifact writes"
                 ),
                 "timings_seconds": timings,
                 "models": model_metrics,
@@ -578,6 +808,13 @@ def main() -> None:
         "feature_aggregation": "mean of per-channel statistics for 1st_test",
         "failure_tail_fraction": 0.25,
         "alert_threshold": selected_threshold,
+        "active_model": active_model,
+        "model_thresholds": thresholds_by_model,
+        "alarm_policy": {
+            "rolling_window": ALARM_ROLLING_WINDOW,
+            "persistence": ALARM_PERSISTENCE,
+            "comparison": "strictly greater than threshold",
+        },
         "baseline_normalization": {
             "method": "feature minus mean of first chronological samples per bearing",
             "sample_count": BASELINE_SAMPLE_COUNT,
@@ -586,13 +823,13 @@ def main() -> None:
         },
         "threshold_tuning": {
             "selection_data": "2nd_test labels; exploratory, not an independent test result",
-            "selected_threshold": selected_threshold,
-            "candidates": threshold_results,
+            "selected_thresholds_by_model": thresholds_by_model,
+            "candidates_by_model": threshold_results_by_model,
         },
         "timings_seconds": timings,
         "scaler": {"means": means.tolist(), "scales": scales.tolist()},
         "models": {
-            "neural_network": {
+            "neural_network_cpp": {
                 "path": str(NEURAL_MODEL_PATH),
                 "sha256": sha256_file(NEURAL_MODEL_PATH),
                 "architecture": [
@@ -609,10 +846,29 @@ def main() -> None:
             "logistic_regression": {
                 "path": str(LOGISTIC_MODEL_PATH),
                 "sha256": sha256_file(LOGISTIC_MODEL_PATH),
+                "seed": NEURAL_NETWORK_SEED,
+                "seed_effect": "not applicable; deterministic optimizer",
+            },
+            "gru_cpp": {
+                "path": str(GRU_MODEL_PATH),
+                "sha256": sha256_file(GRU_MODEL_PATH),
+                "architecture": {
+                    "input_features": len(FEATURE_NAMES),
+                    "time_steps": SEQUENCE_LENGTH,
+                    "gru_units": GRU_UNITS,
+                    "return_sequences": False,
+                    "dense_units": 1,
+                    "dense_activation": "sigmoid",
+                },
+                "seed": NEURAL_NETWORK_SEED,
+                "epochs": NEURAL_NETWORK_EPOCHS,
+                "learning_rate": NEURAL_NETWORK_LEARNING_RATE,
             },
         },
         "training_samples": int(train_labels.size),
-        "test_samples": int(test_labels.size),
+        "training_sequence_windows": int(train_window_labels.size),
+        "test_samples": int(aligned_test_labels.size),
+        "full_test_samples": int(test_labels.size),
     }
     METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     metadata_temporary_path = METADATA_PATH.with_suffix(".json.tmp")
@@ -623,22 +879,33 @@ def main() -> None:
     os.replace(metadata_temporary_path, METADATA_PATH)
 
     print(f"Positive samples in training: {int(train_labels.sum()):,}")
-    print(f"Positive samples in 2nd_test: {int(test_labels.sum()):,}")
-    print(f"MLP alert threshold: probability > {selected_threshold:.3f}")
-    print(f"Logistic benchmark threshold: probability > {ALERT_THRESHOLD:.2f}")
-    for model_name, metrics in (
-        ("Neural network C++/pybind11", model_metrics["neural_network_cpp"]),
-        ("Logistic regression benchmark", model_metrics["logistic_regression"]),
-    ):
+    print(f"Positive aligned samples in 2nd_test: {int(aligned_test_labels.sum()):,}")
+    print(
+        "Metrics use the causal rolling mean and persistent alarm policy "
+        f"(window={ALARM_ROLLING_WINDOW}, persistence={ALARM_PERSISTENCE})."
+    )
+    print(
+        f"{'Model':<26} {'Precision':>10} {'Recall':>10} {'F1':>8} "
+        f"{'Train s':>10} {'Infer s':>10} {'B1 alarm file':>15} {'Healthy FPs':>12}"
+    )
+    for model_id in MODEL_ORDER:
+        metrics = model_metrics[model_id]
+        first_alarm = metrics["first_alarm_bearing_1_file"]
         print(
-            f"{model_name}: Precision={metrics['precision']:.4f} "
-            f"Recall={metrics['recall']:.4f} F1-Score={metrics['f1_score']:.4f}"
+            f"{MODEL_DISPLAY_NAMES[model_id]:<26} "
+            f"{float(metrics['precision']):>10.4f} "
+            f"{float(metrics['recall']):>10.4f} "
+            f"{float(metrics['f1_score']):>8.4f} "
+            f"{training_seconds[model_id]:>10.3f} "
+            f"{inference_seconds[model_id]:>10.3f} "
+            f"{str(first_alarm) if first_alarm is not None else 'n/a':>15} "
+            f"{int(metrics['healthy_false_alarm_episodes']):>12}"
         )
-    print(f"MLP fit time: {neural_training_seconds:.3f} s")
-    print(f"Logistic benchmark fit time: {logistic_training_seconds:.3f} s")
-    print(f"MLP 2nd_test verification time: {neural_verification_seconds:.3f} s")
-    print(f"Logistic 2nd_test verification time: {logistic_verification_seconds:.3f} s")
-    print(f"Total fit + verification time: {timings['total_fit_and_verification_seconds']:.3f} s")
+    print(
+        "Selected dashboard model (max F1, then fewer healthy false alarms, "
+        f"then lower inference time): {MODEL_DISPLAY_NAMES[active_model]}"
+    )
+    print(f"Default alarm threshold: {selected_threshold:.3f}")
     print(f"Saved chronological dashboard predictions: {predictions_path}")
     print(f"Saved test metrics: {metrics_path}")
     print("Metrics are retrospective benchmark results, not industrial validation.")

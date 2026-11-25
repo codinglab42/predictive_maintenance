@@ -3,6 +3,7 @@
 const translations = {
   it: {
     language: "Lingua", replay: "Replay storico NASA IMS · 2nd_test", threshold: "Soglia di allarme",
+    modelSelect: "Modello attivo",
     acquisition: "Acquisizione", source: "Modello C++ · punteggi precalcolati sul dataset IMS",
     subtitle: "Monitoraggio predittivo per macchine da taglio della pietra",
     banner: "Monitoraggio dei mandrini: simulazione su dati storici IMS. Punteggi non calibrati; ogni segnalazione richiede verifica umana.",
@@ -12,15 +13,18 @@ const translations = {
     filterNote: "Media mobile sulle ultime 5 acquisizioni (meno all'inizio); allarme dopo 3 valori consecutivi sopra soglia.",
     advanced: "Diagnostica Avanzata & Confronto Modelli (Ingegneria)",
     methodology: "Soglia selezionata sul 2nd_test: analisi esplorativa, non test indipendente. Punteggi Sigmoide non calibrati. La coda positiva è un'etichetta proxy, non il momento osservato del guasto.",
-    metricsNote: "Le metriche confrontano i punteggi originali, non la regola filtrata del cruscotto.",
+    metricsNote: "Metriche calcolate dopo media mobile causale (5) e persistenza (3); soglie esplorative sul 2nd_test.",
     report: "Report di manutenzione", downloadCsv: "Scarica report CSV", downloadTxt: "Scarica report TXT",
     operational: "OPERATIVO", prealarm: "PRE-ALLARME", critical: "CONTROLLO CONSIGLIATO",
     play: "▶ Play", pause: "⏸ Pausa", active: "Attivi", criticalCount: "critici",
     health: "Health Score", probability: "Punteggio di guasto", rms: "RMS attuale",
     thresholdLine: "Soglia di intervento", firstAlarm: "Primo allarme confermato",
     positiveTail: "Inizio coda positiva (proxy)",
-    comparison: "Rete neurale C++ vs benchmark logistico", logistic: "Regressione logistica",
-    neural: "Rete neurale C++", precision: "Precision", recall: "Recall",
+    comparison: "Confronto metriche dei tre modelli", logistic: "Regressione logistica",
+    neural: "MLP C++", precision: "Precision", recall: "Recall", f1: "F1-Score",
+    modelNames: { logistic_regression: "Regressione logistica C++", neural_network_cpp: "MLP C++", gru_cpp: "GRU C++" },
+    trainTime: "Training (s)", inferenceTime: "Inferenza (s)", firstAlarmFile: "Primo allarme B1",
+    healthyFalseAlarms: "Falsi allarmi sani", alarmThreshold: "Soglia",
     rmsTrend: "Andamento RMS", kurtosisTrend: "Andamento curtosi", time: "Timestamp acquisizione",
     noReport: "Nessun allarme confermato nell'acquisizione selezionata.",
     reportReady: "Allarme confermato: scarica il report per la verifica umana.",
@@ -32,6 +36,7 @@ const translations = {
   },
   en: {
     language: "Language", replay: "NASA IMS historical replay · 2nd_test", threshold: "Alarm threshold",
+    modelSelect: "Active model",
     acquisition: "Acquisition", source: "C++ model · precomputed scores from the IMS dataset",
     subtitle: "Predictive monitoring for stone-cutting machines",
     banner: "Spindle monitoring: simulation using historical IMS data. Scores are uncalibrated; every alert requires human review.",
@@ -41,15 +46,18 @@ const translations = {
     filterNote: "Moving average over the last 5 acquisitions (fewer at the start); alarm after 3 consecutive values above threshold.",
     advanced: "Advanced Diagnostics & Model Comparison (Engineering)",
     methodology: "Threshold selected on 2nd_test: exploratory analysis, not an independent test. Sigmoid scores are uncalibrated. The positive tail is a proxy label, not the observed failure time.",
-    metricsNote: "Comparison metrics use the original scores, not the dashboard's filtered rule.",
+    metricsNote: "Metrics use the causal rolling mean (5) and persistence (3); thresholds are exploratory on 2nd_test.",
     report: "Maintenance report", downloadCsv: "Download CSV report", downloadTxt: "Download TXT report",
     operational: "OPERATIONAL", prealarm: "PRE-ALARM", critical: "INSPECTION RECOMMENDED",
     play: "▶ Play", pause: "⏸ Pause", active: "Active", criticalCount: "critical",
     health: "Health Score", probability: "Failure score", rms: "Current RMS",
     thresholdLine: "Maintenance threshold", firstAlarm: "First confirmed alarm",
     positiveTail: "Start of positive tail (proxy)",
-    comparison: "C++ neural network vs logistic benchmark", logistic: "Logistic regression",
-    neural: "C++ neural network", precision: "Precision", recall: "Recall",
+    comparison: "Three-model metric comparison", logistic: "Logistic regression",
+    neural: "C++ MLP", precision: "Precision", recall: "Recall", f1: "F1-Score",
+    modelNames: { logistic_regression: "C++ logistic regression", neural_network_cpp: "C++ MLP", gru_cpp: "C++ GRU" },
+    trainTime: "Training (s)", inferenceTime: "Inference (s)", firstAlarmFile: "First B1 alarm",
+    healthyFalseAlarms: "Healthy false alarms", alarmThreshold: "Threshold",
     rmsTrend: "RMS trend", kurtosisTrend: "Kurtosis trend", time: "Acquisition timestamp",
     noReport: "No confirmed alarm at the selected acquisition.",
     reportReady: "Confirmed alarm: download the report for human review.",
@@ -60,6 +68,7 @@ const translations = {
   },
   zh: {
     language: "语言", replay: "NASA IMS 历史回放 · 2nd_test", threshold: "报警阈值",
+    modelSelect: "当前模型",
     acquisition: "采集文件", source: "C++ 模型 · IMS 数据集预计算分数",
     subtitle: "石材切割设备预测性维护监控",
     banner: "主轴监测：基于 IMS 历史数据的模拟。分数未经校准；所有报警均需人工复核。",
@@ -69,15 +78,18 @@ const translations = {
     filterNote: "最近 5 次采集的移动平均值（开始时不足 5 次）；连续 3 次超过阈值后报警。",
     advanced: "高级诊断与模型对比（工程）",
     methodology: "阈值使用 2nd_test 标签选择：仅为探索性分析，并非独立测试。Sigmoid 分数未经校准。正标签区间是代理标签，并非实际观测到的故障时刻。",
-    metricsNote: "对比指标使用原始分数，不使用仪表盘滤波规则。",
+    metricsNote: "指标使用因果移动平均（5）和持续性（3）；阈值在 2nd_test 上探索性选择。",
     report: "维护报告", downloadCsv: "下载 CSV 报告", downloadTxt: "下载 TXT 报告",
     operational: "运行正常", prealarm: "预警", critical: "建议检查",
     play: "▶ 播放", pause: "⏸ 暂停", active: "运行中", criticalCount: "临界",
     health: "健康评分", probability: "故障分数", rms: "当前 RMS",
     thresholdLine: "维护阈值", firstAlarm: "首次确认报警",
     positiveTail: "正标签区间起点（代理标签）",
-    comparison: "C++ 神经网络与逻辑回归基准", logistic: "逻辑回归",
-    neural: "C++ 神经网络", precision: "精确率", recall: "召回率",
+    comparison: "三种模型指标对比", logistic: "逻辑回归",
+    neural: "C++ MLP", precision: "精确率", recall: "召回率", f1: "F1 分数",
+    modelNames: { logistic_regression: "C++ 逻辑回归", neural_network_cpp: "C++ MLP", gru_cpp: "C++ GRU" },
+    trainTime: "训练 (秒)", inferenceTime: "推理 (秒)", firstAlarmFile: "轴承1首次报警",
+    healthyFalseAlarms: "健康轴承误报", alarmThreshold: "阈值",
     rmsTrend: "RMS 趋势", kurtosisTrend: "峭度趋势", time: "采集时间",
     noReport: "当前采集文件没有已确认的报警。",
     reportReady: "已确认报警：下载报告供人工复核。",
@@ -91,6 +103,7 @@ const colors = ["#4da3ff", "#b58cff", "#36c6b5", "#ff9f68"];
 let data;
 let position = 0;
 let threshold = 0.999;
+let activeModel = "";
 let language = "it";
 let timer = null;
 let chartTimer = null;
@@ -129,7 +142,14 @@ function setLanguage() {
   document.querySelectorAll("[data-text]").forEach((node) => {
     node.textContent = t[node.dataset.text];
   });
-  if (data) render();
+  if (data) {
+    for (const option of $("model-select").options) {
+      option.textContent = currentText().modelNames[option.value]
+        || data.models[option.value].display_name
+        || option.value;
+    }
+    render();
+  }
 }
 
 function updateAlarms() {
@@ -147,7 +167,7 @@ function render() {
   const icon = { operational: "🟢", prealarm: "🟡", critical: "🔴" };
   $("threshold-value").textContent = threshold.toFixed(3);
   $("position").value = String(position + 1);
-  $("position-value").textContent = `${position + 1} / ${data.series[0].timestamps.length}`;
+  $("position-value").textContent = `${data.series[0].fileIndices[position]} / ${data.series[0].fileIndices.at(-1)}`;
   $("timestamp").textContent = `Timestamp: ${data.series[0].timestamps[position]}`;
   $("play").textContent = timer ? t.pause : t.play;
   $("machine-status").textContent = `${icon[machine]} ${t[machine]}`;
@@ -211,6 +231,47 @@ function commonLayout() {
   };
 }
 
+function renderComparisonTable() {
+  const t = currentText();
+  const table = document.createElement("table");
+  const headers = [
+    "modelSelect", "precision", "recall", "f1", "alarmThreshold",
+    "trainTime", "inferenceTime", "firstAlarmFile", "healthyFalseAlarms",
+  ];
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  for (const key of headers) {
+    const cell = document.createElement("th");
+    cell.textContent = t[key];
+    headerRow.append(cell);
+  }
+  thead.append(headerRow);
+  const tbody = document.createElement("tbody");
+  for (const modelId of Object.keys(data.models)) {
+    const metrics = data.models[modelId];
+    const rowValues = [
+      t.modelNames[modelId] || metrics.display_name || modelId,
+      percent(metrics.precision),
+      percent(metrics.recall),
+      percent(metrics.f1_score),
+      Number(data.modelThresholds[modelId]).toFixed(3),
+      Number(metrics.training_seconds).toFixed(3),
+      Number(metrics.inference_seconds).toFixed(3),
+      metrics.first_alarm_bearing_1_file ?? "—",
+      metrics.healthy_false_alarm_episodes,
+    ];
+    const row = document.createElement("tr");
+    rowValues.forEach((value) => {
+      const cell = document.createElement("td");
+      cell.textContent = String(value);
+      row.append(cell);
+    });
+    tbody.append(row);
+  }
+  table.append(thead, tbody);
+  $("comparison-table").replaceChildren(table);
+}
+
 function drawCharts() {
   const t = currentText();
   const end = position + 1;
@@ -258,11 +319,17 @@ function drawCharts() {
     metricLayout.barmode = "group";
     metricLayout.xaxis = {};
     metricLayout.yaxis = { range: [0, 1.12], tickformat: ".0%", gridcolor: "#28313d" };
-    draws.push(Plotly.react("comparison", ["precision", "recall"].map((key, index) => ({
-      type: "bar", name: t[key], x: [t.neural, t.logistic],
-      y: [data.metrics.neural_network_cpp[key], data.metrics.logistic_regression[key]],
+    const modelIds = Object.keys(data.models);
+    const metricKeys = ["precision", "recall", "f1_score"];
+    const metricLabels = [t.precision, t.recall, t.f1];
+    draws.push(Plotly.react("comparison", metricKeys.map((key, index) => ({
+      type: "bar",
+      x: modelIds.map((modelId) => t.modelNames[modelId] || data.models[modelId].display_name || modelId),
+      y: modelIds.map((modelId) => data.models[modelId][key]),
+      name: metricLabels[index],
       marker: { color: colors[index] },
     })), metricLayout, config));
+    renderComparisonTable();
     for (const [id, feature, title] of [["rms-chart", "rms", t.rmsTrend], ["kurtosis-chart", "kurtosis", t.kurtosisTrend]]) {
       const trendLayout = commonLayout();
       trendLayout.title = { text: title };
@@ -331,6 +398,18 @@ function download(format) {
 }
 
 $("language").addEventListener("change", setLanguage);
+$("model-select").addEventListener("change", (event) => {
+  if (!data) return;
+  activeModel = event.target.value;
+  threshold = data.modelThresholds[activeModel];
+  $("threshold").value = String(threshold);
+  for (const series of data.series) {
+    series.probabilities = series.probabilitiesByModel[activeModel];
+    series.smoothed = movingAverage(series.probabilities);
+  }
+  updateAlarms();
+  render();
+});
 $("threshold").addEventListener("input", (event) => {
   if (!data) return;
   threshold = Number(event.target.value);
@@ -368,10 +447,22 @@ fetch("/api/replay")
   })
   .then((payload) => {
     data = payload;
-    threshold = data.threshold;
+    activeModel = data.activeModel;
+    threshold = data.modelThresholds[activeModel];
+    $("model-select").replaceChildren(...Object.keys(data.models).map((modelId) => {
+      const option = document.createElement("option");
+      option.value = modelId;
+      option.textContent = currentText().modelNames[modelId] || data.models[modelId].display_name || modelId;
+      option.selected = modelId === activeModel;
+      return option;
+    }));
+    $("model-select").disabled = false;
     $("threshold").value = String(threshold);
     $("position").max = String(data.series[0].timestamps.length);
-    for (const series of data.series) series.smoothed = movingAverage(series.probabilities);
+    for (const series of data.series) {
+      series.probabilities = series.probabilitiesByModel[activeModel];
+      series.smoothed = movingAverage(series.probabilities);
+    }
     updateAlarms();
     $("position").disabled = false;
     $("play").disabled = false;

@@ -35,12 +35,15 @@ class BearingSeries:
 class IMSBearingSeries:
     bearing_id: str
     timestamps: np.ndarray
+    file_indices: np.ndarray
     probabilities: np.ndarray
+    probabilities_by_model: dict[str, np.ndarray]
     labels: np.ndarray
     rms: np.ndarray
     kurtosis: np.ndarray
     above_threshold: np.ndarray
     alert_threshold: float
+    alert_thresholds: dict[str, float]
 
 
 _REQUIRED_COLUMNS = {
@@ -52,7 +55,16 @@ _REQUIRED_COLUMNS = {
     "balanced_f1_above_threshold",
     "balanced_f1_notification",
 }
-_IMS_REQUIRED_COLUMNS = {"bearing_id", "timestamp", "label", "probability", "alert_threshold"}
+_IMS_LEGACY_COLUMNS = {"bearing_id", "timestamp", "label", "probability", "alert_threshold"}
+_IMS_MULTI_MODEL_COLUMNS = {
+    "bearing_id",
+    "timestamp",
+    "file_index",
+    "label",
+    "model_id",
+    "probability",
+    "alert_threshold",
+}
 
 
 def load_dashboard_data(features_path: Path, predictions_path: Path) -> dict[str, BearingSeries]:
@@ -163,8 +175,9 @@ def load_dashboard_data(features_path: Path, predictions_path: Path) -> dict[str
 def load_ims_dashboard_data(
     features_path: Path,
     predictions_path: Path,
+    active_model: str | None = None,
 ) -> dict[str, IMSBearingSeries]:
-    """Join chronological 2nd_test features to neural-network predictions."""
+    """Join chronological 2nd_test features to predictions from each model."""
     with np.load(features_path, allow_pickle=False) as archive:
         missing_arrays = {"features", "labels", "bearing_ids", "timestamps"} - set(archive.files)
         if missing_arrays:
@@ -198,14 +211,21 @@ def load_ims_dashboard_data(
             raise ValueError(f"duplicate IMS feature sample found for {bearing_id} at {timestamp}")
         feature_rows[key] = (float(row[0]), float(row[2]), int(label))
 
-    predictions: dict[tuple[str, str], float] = {}
-    prediction_threshold: float | None = None
+    predictions: dict[tuple[str, str], dict[str, float]] = {}
+    file_indices: dict[tuple[str, str], int] = {}
+    thresholds_by_model: dict[str, float] = {}
     try:
         with predictions_path.open(newline="", encoding="utf-8") as source:
             reader = csv.DictReader(source)
             if reader.fieldnames is None:
                 raise ValueError(f"IMS prediction CSV is empty: {predictions_path}")
-            missing_columns = _IMS_REQUIRED_COLUMNS - set(reader.fieldnames)
+            columns = set(reader.fieldnames)
+            required_columns = (
+                _IMS_MULTI_MODEL_COLUMNS
+                if _IMS_MULTI_MODEL_COLUMNS <= columns
+                else _IMS_LEGACY_COLUMNS
+            )
+            missing_columns = required_columns - columns
             if missing_columns:
                 raise ValueError(
                     f"IMS prediction CSV is missing columns: {', '.join(sorted(missing_columns))}"
@@ -217,29 +237,36 @@ def load_ims_dashboard_data(
                     label = int(row["label"])
                     probability = float(row["probability"])
                     threshold = float(row["alert_threshold"])
+                    model_id = row["model_id"] if "model_id" in row else "neural_network_cpp"
+                    file_index = int(row["file_index"]) if "file_index" in row else 0
                 except (TypeError, ValueError) as error:
                     raise ValueError(
                         f"invalid IMS prediction CSV values on line {line_number}"
                     ) from error
                 if (
-                    label not in {0, 1}
+                    not model_id
+                    or label not in {0, 1}
                     or not math.isfinite(probability)
                     or not 0 <= probability <= 1
                 ):
                     raise ValueError(f"invalid IMS label or probability on CSV line {line_number}")
                 if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
                     raise ValueError(f"invalid IMS alert threshold on CSV line {line_number}")
-                if prediction_threshold is None:
-                    prediction_threshold = threshold
-                elif not math.isclose(
+                if "file_index" in row and file_index < 1:
+                    raise ValueError(f"invalid IMS file index on CSV line {line_number}")
+                if model_id in thresholds_by_model and not math.isclose(
                     threshold,
-                    prediction_threshold,
+                    thresholds_by_model[model_id],
                     rel_tol=0.0,
                     abs_tol=1e-12,
                 ):
-                    raise ValueError("IMS prediction CSV contains multiple alert thresholds")
+                    raise ValueError(
+                        f"IMS prediction CSV contains multiple thresholds for {model_id}"
+                    )
+                thresholds_by_model[model_id] = threshold
                 key = (bearing_id, timestamp)
-                if key in predictions:
+                model_predictions = predictions.setdefault(key, {})
+                if model_id in model_predictions:
                     raise ValueError(
                         f"duplicate IMS prediction found for {bearing_id} at {timestamp}"
                     )
@@ -247,40 +274,83 @@ def load_ims_dashboard_data(
                     raise ValueError(
                         f"IMS prediction does not match feature label on CSV line {line_number}"
                     )
-                predictions[key] = probability
+                model_predictions[model_id] = probability
+                if "file_index" in row:
+                    if key in file_indices and file_indices[key] != file_index:
+                        raise ValueError(
+                            f"IMS models use different file indices on CSV line {line_number}"
+                        )
+                    file_indices[key] = file_index
     except OSError as error:
         raise OSError(f"could not read IMS prediction CSV {predictions_path}: {error}") from error
 
-    if feature_rows.keys() != predictions.keys():
-        missing_predictions = feature_rows.keys() - predictions.keys()
-        missing_features = predictions.keys() - feature_rows.keys()
-        details = []
-        if missing_predictions:
-            details.append(f"{len(missing_predictions)} IMS feature samples lack predictions")
-        if missing_features:
-            details.append(f"{len(missing_features)} IMS predictions lack features")
-        raise ValueError("IMS feature/prediction samples do not match: " + "; ".join(details))
-    if prediction_threshold is None:
-        raise ValueError("IMS prediction CSV contains no alert threshold")
+    model_ids = set(thresholds_by_model)
+    if not model_ids:
+        raise ValueError("IMS prediction CSV contains no model predictions")
+    if any(set(values) != model_ids for values in predictions.values()):
+        raise ValueError("IMS prediction CSV does not contain every model for every sample")
+    missing_features = predictions.keys() - feature_rows.keys()
+    if missing_features:
+        raise ValueError(
+            f"IMS prediction CSV contains {len(missing_features)} samples without features"
+        )
+    for bearing_id in sorted({key[0] for key in feature_rows}):
+        feature_keys = sorted(
+            (key for key in feature_rows if key[0] == bearing_id),
+            key=lambda key: datetime.fromisoformat(key[1]),
+        )
+        prediction_keys = sorted(
+            (key for key in predictions if key[0] == bearing_id),
+            key=lambda key: datetime.fromisoformat(key[1]),
+        )
+        start = len(feature_keys) - len(prediction_keys)
+        if start < 0 or feature_keys[start:] != prediction_keys:
+            raise ValueError(
+                f"IMS predictions for {bearing_id} must cover a contiguous chronological suffix"
+            )
+        if file_indices:
+            expected_file_indices = list(range(start + 1, len(feature_keys) + 1))
+            observed_file_indices = [file_indices[key] for key in prediction_keys]
+            if observed_file_indices != expected_file_indices:
+                raise ValueError(f"IMS file indices are not aligned for {bearing_id}")
+    selected_model = active_model or sorted(model_ids)[0]
+    if selected_model not in model_ids:
+        raise ValueError(f"active IMS model {selected_model!r} is missing from predictions")
 
     series_by_bearing: dict[str, IMSBearingSeries] = {}
     for bearing_id in sorted({key[0] for key in feature_rows}):
         keys = sorted(
-            (key for key in feature_rows if key[0] == bearing_id),
+            (key for key in predictions if key[0] == bearing_id),
             key=lambda key: datetime.fromisoformat(key[1]),
         )
+        probability_map = {
+            model_id: np.asarray(
+                [predictions[key][model_id] for key in keys], dtype=np.float64
+            )
+            for model_id in sorted(model_ids)
+        }
+        selected_threshold = thresholds_by_model[selected_model]
         series_by_bearing[bearing_id] = IMSBearingSeries(
             bearing_id=bearing_id,
             timestamps=np.asarray([key[1] for key in keys], dtype=str),
-            probabilities=np.asarray([predictions[key] for key in keys], dtype=np.float64),
+            file_indices=np.asarray(
+                [
+                    file_indices[key] if key in file_indices else index + 1
+                    for index, key in enumerate(keys)
+                ],
+                dtype=np.int64,
+            ),
+            probabilities=probability_map[selected_model],
+            probabilities_by_model=probability_map,
             labels=np.asarray([feature_rows[key][2] for key in keys], dtype=np.int64),
             rms=np.asarray([feature_rows[key][0] for key in keys], dtype=np.float64),
             kurtosis=np.asarray([feature_rows[key][1] for key in keys], dtype=np.float64),
             above_threshold=np.asarray(
-                [predictions[key] > prediction_threshold for key in keys],
+                [predictions[key][selected_model] > selected_threshold for key in keys],
                 dtype=bool,
             ),
-            alert_threshold=prediction_threshold,
+            alert_threshold=selected_threshold,
+            alert_thresholds=thresholds_by_model.copy(),
         )
     if not series_by_bearing:
         raise ValueError("no IMS 2nd_test predictions were loaded")

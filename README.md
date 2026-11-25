@@ -1,10 +1,10 @@
 # Manutenzione predittiva
 
 Pipeline sperimentale basata principalmente sul dataset NASA IMS Bearing.
-Estrae feature vibrazionali dai tre test IMS, addestra un MLP implementato in
-C++ e accessibile tramite pybind11 e usa il `2nd_test` come verifica tenuta
-separata. La regressione logistica è mantenuta come benchmark. FEMTO/PRONOSTIA
-resta disponibile come pipeline secondaria.
+Estrae feature vibrazionali dai tre test IMS, confronta regressione logistica,
+MLP e GRU implementati in C++ e accessibili tramite pybind11, e usa `2nd_test`
+per una valutazione esplorativa. FEMTO/PRONOSTIA resta disponibile come
+pipeline secondaria.
 
 I dati provengono da prove accelerate di laboratorio, non da macchine in
 produzione. Le metriche sono una verifica tecnica della pipeline e non
@@ -58,8 +58,9 @@ cartella condivisa:
 python scripts/extract_ims.py --output-dir data/raw/ims
 ```
 
-Prepara le feature, addestra la rete neurale C++ tramite pybind11 e il
-benchmark logistico, e valuta entrambi sul `2nd_test`:
+Prepara le feature e addestra tre modelli C++ tramite pybind11: regressione
+logistica, MLP istantaneo e GRU ricorrente. Il `2nd_test` viene usato come
+insieme di valutazione esplorativa:
 
 ```bash
 python scripts/train_predictive_maintenance.py
@@ -75,10 +76,13 @@ Il training usa solo `1st_test` e `3rd_test`. Per ogni bearing e serie, le sei
 feature dei primi 30 file cronologici vengono mediate e sottratte dall'intera
 sequenza; per il `2nd_test` la stessa trasformazione usa soltanto i suoi primi
 30 file, senza etichette. Lo `StandardScaler` è poi fit-tato sul training
-normalizzato e applicato al test senza rifit. Il modello è un MLP C++ `6-12-1`
-con ReLU, output Sigmoid, learning rate `0.001`, 60 epoche e regolarizzazione
-L2 (`0.01`); la pipeline usa `predict_proba` per ottenere i punteggi Sigmoide,
-non le classi di `predict`. Le sei feature sono RMS, deviazione standard,
+normalizzato e applicato al test senza rifit. Il baseline logistico e l'MLP
+usano tutte le acquisizioni di training; la GRU usa finestre scorrevoli di 15
+acquisizioni separate per bearing, con 12 unità e un output Sigmoid. Le tre
+inferenze usano `predict_proba`; l'MLP `6-12-1` mantiene ReLU, 60 epoche e
+regolarizzazione L2 (`0.01`), mentre la GRU è addestrata con BPTT. Tutte le
+reti usano seed `42`; la regressione logistica è deterministica per
+inizializzazione a zero. Le sei feature sono RMS, deviazione standard,
 curtosi, asimmetria, picco-picco e fattore di cresta. Nel `1st_test` le due
 colonne di ciascun cuscinetto sono elaborate separatamente e le sei feature
 risultanti vengono mediate; nel `2nd_test` e `3rd_test` ogni cuscinetto ha una
@@ -93,27 +97,22 @@ target 1: bearing 3 e 4 in `1st_test`, bearing 1 in `2nd_test`, bearing 3 in
 `3rd_test`. Per i campioni il cui numero non è divisibile per quattro, l'inizio
 della finestra positiva è l'indice `floor(0.75 * N)`.
 
-Il training valuta il MLP alle soglie `0.50`, `0.65`, `0.75`, `0.80`, `0.85`,
-`0.90`, `0.95`, `0.97`, `0.99`, `0.995` e `0.999`, selezionando il massimo F1
-e, a parità, meno allarmi sui bearing sani e poi la soglia maggiore. **Questa
-selezione usa le etichette del `2nd_test`**: i risultati MLP così ottenuti sono
-esplorativi e non costituiscono una verifica indipendente. La regressione
-logistica resta riportata alla soglia baseline `probabilità > 0.7`. Il MLP è salvato in
-`models/ims_neural_network.bin`, la regressione logistica di benchmark in
-`models/ims_logistic_regression.bin`; parametri scaler e checksum sono in
-`models/ims_preprocessing.json`. Le feature e le predizioni cronologiche del
-test e le metriche comparative vengono salvate in
-`/mnt/shared/predictive-maintenance/processed/`.
-Nella verifica corrente la soglia selezionata è `0.999` (Precision `0.7524`,
-Recall `0.6423`, F1 `0.6930`); la regressione logistica ha F1 `0.6059`.
-`predict_proba` produce migliaia di valori distinti. I quattro bearing sono
-verdi al primo file; il primo allarme del Bearing 1 è al file 703, prima
-dell'inizio della coda target al file 739. Bearing 2 e 4 hanno alcuni falsi
-allarmi più tardi (primi allarmi ai file 891 e 972); Bearing 3 non supera la
-soglia selezionata.
-Il training stampa e salva nel JSON anche i tempi di fit e verifica separati
-per MLP e regressione logistica. Per ripetere soltanto fit e verifica usando le
-feature già estratte:
+I tre modelli vengono confrontati sugli stessi 970 istanti del `2nd_test`,
+dai file `15` a `984`; le finestre GRU non attraversano mai i confini tra
+bearing. Per ciascun modello si sceglie la soglia che massimizza F1 dopo una
+media mobile causale di 5 campioni e la conferma di 3 campioni consecutivi;
+gli spareggi favoriscono meno episodi di falsi allarmi sui bearing sani
+2–4, poi la soglia più alta. Il cruscotto predefinisce il modello con F1
+maggiore, poi meno falsi allarmi sani e inferenza più rapida. **Soglie,
+metriche e modello predefinito sono selezionati usando le etichette del
+`2nd_test`**: sono risultati esplorativi, non una verifica indipendente.
+Modelli, soglie, probabilità long-form e metriche sono salvati in
+`/mnt/shared/predictive-maintenance/processed/`; pesi e scaler sono salvati in
+`models/`, con checksum e configurazione in `models/ims_preprocessing.json`.
+Il training stampa Precision, Recall, F1, tempi di fit/inferenza, file del
+primo allarme su Bearing 1 e conteggio degli episodi di falsi allarmi sui
+bearing sani.
+Per ripetere soltanto fit e valutazione usando le feature già estratte:
 
 ```bash
 python scripts/train_predictive_maintenance.py \
@@ -134,19 +133,20 @@ dal pacchetto installato, senza connessioni a servizi esterni. Replay e filtri
 sono calcolati nel browser; riavvia il server dopo aver rigenerato i dati.
 Il modello C++ non viene eseguito in tempo reale durante il replay.
 
-Il cruscotto mostra le probabilità cronologiche dei quattro cuscinetti del
-`2nd_test`, con replay Play/Pausa, soglia configurabile, Health Index e stati
-di allarme. Le probabilità sono state prodotte dalla rete neurale C++ tramite
-pybind11; l'app usa i file elaborati e non riesegue l'inferenza al cambio di
-acquisizione.
+Il cruscotto mostra le probabilità dei quattro cuscinetti del `2nd_test`, con
+selettore per regressione logistica, MLP e GRU, replay Play/Pausa, soglia
+configurabile, Health Index e stati di allarme. Le probabilità sono state
+prodotte dai tre modelli C++ tramite pybind11; l'app usa i file elaborati e
+non riesegue l'inferenza al cambio di acquisizione.
 Per il replay, il cruscotto usa una media mobile causale delle ultime cinque
 acquisizioni (o di quelle disponibili all'inizio); un allarme critico scatta
 solo dopo tre valori consecutivi della media sopra soglia e si azzera quando
 la media torna sotto o alla soglia. Card, Health Index, grafico e report usano
-la stessa serie filtrata. La soglia preselezionata e le metriche comparative
-sopra sono calcolate sui punteggi originali, non sulla nuova regola filtrata:
-non costituiscono una validazione del filtro. Il replay resta una simulazione
-su dati storici e i punteggi non sono calibrati.
+la stessa serie filtrata. Il pannello ingegneristico confronta i tre modelli
+con Precision, Recall, F1, tempi, soglie, primo allarme e falsi allarmi sui
+bearing sani. Le soglie sono ottimizzate con la stessa regola temporale, ma
+usano le etichette del test: il replay resta una simulazione storica e i
+punteggi non sono calibrati.
 
 ## Dataset secondario: FEMTO/PRONOSTIA
 
@@ -378,19 +378,31 @@ cartella `web/` gestisce la visualizzazione nel browser.
 `python scripts/dashboard.py` resta disponibile come entry point compatibile.
 
 La barra laterale permette di scegliere Italiano, English o 中文, scorrere i
-984 file del `2nd_test`, avviare o mettere in pausa il replay e regolare la
-soglia di allarme (preselezionata alla soglia scelta nel tuning MLP e salvata
-nei risultati, con precisione al millesimo). La vista principale mostra lo stato della
-macchina, l'indice di salute globale, i quattro componenti della macchina da
-taglio e le probabilità di guasto fino all'acquisizione selezionata. Il
-pannello tecnico confronta Precision/Recall dei due modelli, mostra RMS e
-curtosi e consente di scaricare un report CSV o TXT per i cuscinetti critici.
+970 istanti allineati (file `15`–`984`), cambiare modello, regolare la soglia
+e avviare o mettere in pausa il replay. La vista principale mostra stato
+macchina, indice di salute globale, quattro componenti e probabilità fino
+all'acquisizione selezionata. Il pannello tecnico confronta i tre modelli,
+mostra RMS e curtosi e consente di scaricare un report CSV o TXT per i
+cuscinetti critici.
 
 È un replay storico del benchmark, non un collegamento a sensori live. La
 coda positiva del 25% è un'etichetta proxy e non l'istante osservato del
 guasto; la soglia MLP selezionata sul `2nd_test` e i relativi punteggi non sono
 una misura indipendente né sono calibrati per uso industriale. Il report
 raccomanda una verifica umana e non autorizza una sostituzione automatica.
+
+## Presentazione tecnica AI Division
+
+Genera la presentazione a otto slide dai risultati aggiornati del benchmark:
+
+```bash
+python scripts/generate_presentation.py
+```
+
+Lo script legge `ims_test_metrics.json` dalla cartella condivisa e salva
+`PdM_AI_Division_Demo.pptx` nella radice del progetto. Le metriche vengono
+caricate dal JSON a ogni esecuzione; la presentazione dichiara esplicitamente
+che il tuning sul `2nd_test` non costituisce una verifica cieca.
 
 ## Analisi esplorativa dei dataset pubblici
 

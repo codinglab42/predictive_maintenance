@@ -32,8 +32,10 @@ MachineStatus = Literal["operational", "prealarm", "critical"]
 @dataclass(frozen=True)
 class DashboardData:
     series_by_bearing: dict[str, IMSBearingSeries]
-    model_metrics: dict[str, dict[str, float]]
+    model_metrics: dict[str, dict[str, object]]
     selected_threshold: float
+    active_model: str
+    model_thresholds: dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -61,14 +63,51 @@ def _load_dashboard_data(
     predictions_path: Path,
     metrics_path: Path,
 ) -> DashboardData:
+    try:
+        metrics_document = json.loads(metrics_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Invalid model metrics JSON: {metrics_path}") from error
+    models = metrics_document.get("models")
+    if not isinstance(models, dict):
+        raise ValueError(f"Model metrics are missing from {metrics_path}.")
+    try:
+        active_model = str(metrics_document.get("active_model", "neural_network_cpp"))
+        selected_threshold = float(metrics_document["threshold"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"Selected alarm threshold is missing from {metrics_path}.") from error
+    if not math.isfinite(selected_threshold) or not 0.0 <= selected_threshold <= 1.0:
+        raise ValueError(f"Selected alarm threshold is invalid in {metrics_path}.")
+    thresholds_document = metrics_document.get("thresholds_by_model")
+    if isinstance(thresholds_document, dict):
+        try:
+            model_thresholds = {
+                str(model_id): float(threshold)
+                for model_id, threshold in thresholds_document.items()
+            }
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Model alarm thresholds are invalid in {metrics_path}.") from error
+    else:
+        model_thresholds = {active_model: selected_threshold}
+    if active_model not in model_thresholds or not math.isclose(
+        model_thresholds[active_model], selected_threshold, rel_tol=0.0, abs_tol=1e-12
+    ):
+        raise ValueError(f"Active model threshold is inconsistent in {metrics_path}.")
+    if any(
+        not math.isfinite(value) or not 0.0 <= value <= 1.0
+        for value in model_thresholds.values()
+    ):
+        raise ValueError(f"Model alarm thresholds are invalid in {metrics_path}.")
+
     series_by_bearing = load_ims_dashboard_data(
         features_path,
         predictions_path,
+        active_model=active_model,
     )
     probability_values = {
         float(probability)
         for series in series_by_bearing.values()
-        for probability in series.probabilities
+        for probabilities in series.probabilities_by_model.values()
+        for probability in probabilities
     }
     if len(probability_values) <= 2:
         raise ValueError(
@@ -87,33 +126,12 @@ def _load_dashboard_data(
     for bearing_id in BEARING_ORDER[1:]:
         if not (series_by_bearing[bearing_id].timestamps == reference_timestamps).all():
             raise ValueError("IMS bearing timestamps are not aligned across acquisition files.")
+    for series in series_by_bearing.values():
+        if series.alert_thresholds != model_thresholds:
+            raise ValueError("Prediction CSV and metrics JSON use different model thresholds.")
 
-    try:
-        metrics_document = json.loads(metrics_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as error:
-        raise ValueError(f"Invalid model metrics JSON: {metrics_path}") from error
-    models = metrics_document.get("models")
-    if not isinstance(models, dict):
-        raise ValueError(f"Model metrics are missing from {metrics_path}.")
-    try:
-        selected_threshold = float(metrics_document["threshold"])
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError(f"Selected alarm threshold is missing from {metrics_path}.") from error
-    if not math.isfinite(selected_threshold) or not 0.0 <= selected_threshold <= 1.0:
-        raise ValueError(f"Selected alarm threshold is invalid in {metrics_path}.")
-    if any(
-        not math.isclose(
-            series.alert_threshold,
-            selected_threshold,
-            rel_tol=0.0,
-            abs_tol=1e-12,
-        )
-        for series in series_by_bearing.values()
-    ):
-        raise ValueError("Prediction CSV and metrics JSON use different alarm thresholds.")
-
-    model_metrics: dict[str, dict[str, float]] = {}
-    for model_key in ("neural_network_cpp", "logistic_regression"):
+    model_metrics: dict[str, dict[str, object]] = {}
+    for model_key in sorted(model_thresholds):
         model = models.get(model_key)
         if not isinstance(model, dict):
             raise ValueError(f"Metrics for {model_key} are missing from {metrics_path}.")
@@ -128,9 +146,27 @@ def _load_dashboard_data(
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"Invalid {metric_name} metric for {model_key}.")
             values[metric_name] = value
+        for metric_name in (
+            "display_name",
+            "training_seconds",
+            "inference_seconds",
+            "first_alarm_bearing_1_file",
+            "healthy_false_alarm_episodes",
+            "false_alarm_episodes_by_bearing",
+        ):
+            if metric_name in model:
+                values[metric_name] = model[metric_name]
         model_metrics[model_key] = values
 
-    return DashboardData(series_by_bearing, model_metrics, selected_threshold)
+    if set(model_metrics) != set(model_thresholds):
+        raise ValueError(f"Model metrics and thresholds differ in {metrics_path}.")
+    return DashboardData(
+        series_by_bearing,
+        model_metrics,
+        selected_threshold,
+        active_model,
+        model_thresholds,
+    )
 
 
 def classify_probability(probability: float, threshold: float) -> MachineStatus:

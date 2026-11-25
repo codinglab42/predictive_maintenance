@@ -9,8 +9,11 @@ import numpy as np
 from scripts.train_ims_model import (
     THRESHOLD_CANDIDATES,
     _baseline_normalize_features,
+    _build_sliding_windows,
+    _confirmed_alarms,
     _load_dataset,
     _metrics,
+    _rolling_mean_by_bearing,
     _threshold_diagnostics,
     _validate_probabilities,
 )
@@ -78,32 +81,59 @@ class IMSTrainingTests(unittest.TestCase):
         self.assertAlmostEqual(recall, 0.5)
         self.assertAlmostEqual(f1, 0.5)
 
-    def test_threshold_sweep_selects_best_f1_then_higher_threshold(self) -> None:
+    def test_sliding_windows_keep_bearings_separate_and_label_the_final_step(self) -> None:
+        features = np.asarray([[index] * 6 for index in range(6)], dtype=np.float64)
+        labels = np.asarray([0, 0, 1, 0, 1, 1])
+        bearings = np.asarray(["bearing_a"] * 3 + ["bearing_b"] * 3)
+        timestamps = np.asarray(
+            ["2003-10-22 12:00:00", "2003-10-22 12:10:00", "2003-10-22 12:20:00"] * 2
+        )
+
+        windows, window_labels, window_bearings, _, file_indices = _build_sliding_windows(
+            features, labels, bearings, timestamps, time_steps=2
+        )
+
+        self.assertEqual(windows.shape, (4, 2, 6))
+        np.testing.assert_array_equal(window_bearings, ["bearing_a", "bearing_a", "bearing_b", "bearing_b"])
+        np.testing.assert_array_equal(window_labels, [0, 1, 1, 1])
+        np.testing.assert_array_equal(file_indices, [2, 3, 2, 3])
+        self.assertTrue(np.all(windows[:2, :, 0] < 3))
+        self.assertTrue(np.all(windows[2:, :, 0] >= 3))
+
+    def test_rolling_mean_and_persistence_are_scoped_to_each_bearing(self) -> None:
+        probabilities = np.asarray([0.9, 0.9, 0.9, 0.1, 0.1, 0.1])
+        bearings = np.asarray(["bearing_a"] * 3 + ["bearing_b"] * 3)
+        timestamps = np.asarray(
+            ["2003-10-22 12:00:00", "2003-10-22 12:10:00", "2003-10-22 12:20:00"] * 2
+        )
+
+        smoothed = _rolling_mean_by_bearing(probabilities, bearings, timestamps, window=2)
+        alarms = _confirmed_alarms(smoothed, bearings, timestamps, threshold=0.5, persistence=2)
+
+        np.testing.assert_allclose(smoothed, [0.9, 0.9, 0.9, 0.1, 0.1, 0.1])
+        np.testing.assert_array_equal(alarms, [False, True, True, False, False, False])
+
+    def test_threshold_diagnostics_report_file_index_and_healthy_alarm_episodes(self) -> None:
+        bearings = np.asarray(
+            ["2nd_test_bearing_1"] * 5 + ["2nd_test_bearing_2"] * 5
+        )
+        timestamps = np.asarray(
+            [f"2003-10-22 12:{index:02d}:00" for index in range(5)] * 2
+        )
+        labels = np.asarray([0, 0, 1, 1, 1] + [0] * 5)
+        probabilities = np.full(10, 0.99)
+        file_indices = np.asarray([15, 16, 17, 18, 19] * 2)
+
         results, selected = _threshold_diagnostics(
-            np.asarray([1, 1, 0, 0]),
-            np.asarray([0.95, 0.70, 0.70, 0.10]),
-            np.asarray(
-                [
-                    "2nd_test_bearing_1",
-                    "2nd_test_bearing_1",
-                    "2nd_test_bearing_2",
-                    "2nd_test_bearing_3",
-                ]
-            ),
+            labels, probabilities, bearings, timestamps, file_indices
         )
 
         self.assertEqual(len(results), len(THRESHOLD_CANDIDATES))
-        self.assertEqual(selected["threshold"], 0.65)
-        self.assertAlmostEqual(float(selected["f1_score"]), 0.8)
-        self.assertEqual(selected["healthy_bearing_alarm_samples"], 1)
+        self.assertEqual(selected["first_alarm_bearing_1_file"], 17)
+        self.assertEqual(selected["healthy_false_alarm_episodes"], 1)
         self.assertEqual(
-            selected["alarm_samples_by_bearing"],
-            {
-                "Bearing 1": 2,
-                "Bearing 2": 1,
-                "Bearing 3": 0,
-                "Bearing 4": 0,
-            },
+            selected["false_alarm_episodes_by_bearing"]["2nd_test_bearing_2"],
+            1,
         )
 
     def test_probability_validation_requires_one_finite_score_per_sample(self) -> None:

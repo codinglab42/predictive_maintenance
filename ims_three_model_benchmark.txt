@@ -1,0 +1,86 @@
+IMS THREE-MODEL BENCHMARK
+Generated: 2026-11-25
+
+DATA AND EVALUATION
+-------------------
+Dataset: NASA IMS Bearing Dataset
+Training series: 1st_test + 3rd_test
+Evaluation series: 2nd_test
+Training samples before windowing: 33,920
+GRU training windows: 33,808
+Aligned evaluation windows: 3,880 (970 per bearing)
+Evaluation file indices: 15-984
+Positive evaluation labels: 246
+Features: RMS, standard deviation, kurtosis, skewness, peak-to-peak,
+          crest factor
+Preprocessing: subtract the per-bearing mean of the first 30 chronological
+               acquisitions; fit StandardScaler on training data only.
+All model comparisons use the same evaluation instants and the label of the
+last timestep in each 15-step window.
+
+MODELS
+------
+Logistic regression C++:
+  learning rate 0.05; max iterations 1,500; L2 lambda 0.01;
+  deterministic zero initialization.
+
+MLP C++:
+  6-12-1 architecture; ReLU hidden activation; sigmoid output;
+  Adam learning rate 0.001; 60 epochs; batch size 32;
+  L2 regularization strength 0.01; seed 42.
+
+GRU C++:
+  Input shape (15 timesteps, 6 features); GRU with 12 units and
+  return_sequences=False; Dense(1, sigmoid); Adam learning rate 0.001;
+  60 epochs; batch size 32; trained with BPTT; seed 42.
+
+ALARM AND MODEL-SELECTION POLICY
+--------------------------------
+For each model, probabilities are smoothed independently per bearing using a
+causal rolling mean of 5 acquisitions (or fewer at the beginning). An alarm
+is confirmed after 3 consecutive smoothed values strictly above that model's
+threshold.
+
+Threshold candidates are evaluated on 2nd_test. Selection maximizes F1 of the
+confirmed alarms, then minimizes false-alarm episodes on healthy Bearings 2-4,
+then prefers the higher threshold. The dashboard default model maximizes F1,
+then minimizes healthy-bearing false alarms, then prefers lower inference
+time.
+
+BENCHMARK RESULTS
+-----------------
+Model                    Threshold  Precision  Recall     F1       Fit (s)  Inference (s)  First B1 alarm  Healthy false-alarm episodes
+Logistic regression C++  0.500      0.8159     0.6667     0.7338   1.470    0.000315       707             1
+MLP C++                  0.500      0.8214     0.6545     0.7285   0.769    0.002834       707             2
+GRU C++                  0.950      0.6608     0.9187     0.7687  76.589    0.053749       622             2
+
+Healthy false-alarm episodes by bearing:
+Model                    Bearing 2  Bearing 3  Bearing 4  Total
+Logistic regression C++  1          0          0          1
+MLP C++                  1          0          1          2
+GRU C++                  2          0          0          2
+
+Selected dashboard model: GRU C++ (threshold 0.950).
+Bearing 1 target proxy starts at file 739. The first confirmed alarms were at
+files 707 (logistic regression), 707 (MLP), and 622 (GRU).
+
+INTERPRETATION
+--------------
+Thresholds and reported metrics were selected/evaluated using labels from
+2nd_test. These are exploratory retrospective benchmark results, not an
+independent test result, industrial validation, or calibrated failure
+probabilities. The positive tail is a proxy label, not an observed failure
+time. Alarm outputs require human review.
+
+Timing covers model fitting and predict_proba only. It excludes feature
+extraction, scaling, metric calculation, and artifact writes. Timings are
+wall-clock measurements and can vary by machine.
+
+GENERATED OUTPUTS
+-----------------
+Predictions: /mnt/shared/predictive-maintenance/processed/ims_test_predictions.csv
+Metrics:     /mnt/shared/predictive-maintenance/processed/ims_test_metrics.json
+Models:      models/ims_logistic_regression.bin
+             models/ims_neural_network.bin
+             models/ims_gru.bin
+Metadata:    models/ims_preprocessing.json

@@ -44,6 +44,11 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .kv span { color: #9eacc0; }
 .chart { height: 450px; width: 100%; }
 .chart.small { height: 320px; }
+.comparison-table { overflow-x: auto; margin: 12px 0 20px; }
+.comparison-table table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+.comparison-table th, .comparison-table td { padding: 9px 10px; text-align: right; border-bottom: 1px solid #303b49; white-space: nowrap; }
+.comparison-table th:first-child, .comparison-table td:first-child { text-align: left; }
+.comparison-table th { color: #9eacc0; font-weight: 600; }
 .trends { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 details { margin-top: 25px; padding: 16px; border: 1px solid #303b49; border-radius: 10px; }
 summary { cursor: pointer; font-weight: 650; }

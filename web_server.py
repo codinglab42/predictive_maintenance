@@ -20,12 +20,20 @@ def build_payload() -> dict:
     data = load_dashboard_data()
     return {
         "threshold": data.selected_threshold,
+        "activeModel": data.active_model,
+        "modelThresholds": data.model_thresholds,
+        "models": data.model_metrics,
         "metrics": data.model_metrics,
         "series": [
             {
                 "id": bearing_id,
                 "timestamps": series.timestamps.tolist(),
+                "fileIndices": series.file_indices.tolist(),
                 "probabilities": series.probabilities.tolist(),
+                "probabilitiesByModel": {
+                    model_id: probabilities.tolist()
+                    for model_id, probabilities in series.probabilities_by_model.items()
+                },
                 "rms": series.rms.tolist(),
                 "kurtosis": series.kurtosis.tolist(),
                 "labels": series.labels.tolist(),
